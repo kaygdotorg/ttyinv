@@ -1,253 +1,415 @@
 # ttyinv/v1 specification
 
-## 1. Scope
+Status: **stable v1 dialect**
 
-`ttyinv/v1` is a strict Markdown invoice dialect rendered as A4 HTML and PDF.
+This document defines the portable Markdown invoice format accepted by `ttyinv`. The format is intentionally narrow: YAML frontmatter carries structured invoice metadata; level-two Markdown headings and GFM tables carry titled sections; prose carries notes and links. The renderer must reject ambiguity rather than infer financial intent creatively.
 
-The source document is self-contained with respect to invoice data. It may reference local binary assets and supporting documents by path.
+## 1. Document structure
 
-The renderer performs arithmetic only. It does not determine taxes, exchange rates, legal wording, or jurisdictional compliance.
+A document is UTF-8 text with:
 
-## 2. Document structure
+1. one YAML frontmatter mapping delimited by `---` at the beginning of the file;
+2. zero or more H2 sections;
+3. GFM tables or Markdown prose within those sections.
 
-A source file consists of:
+```text
+---
+<frontmatter>
+---
 
-1. YAML frontmatter delimited by `---`.
-2. A Markdown body containing titled tables and optional prose sections.
-3. Optional relative paths to logos, signatures, fonts, images, and supporting documents.
+## <section title>
 
-The frontmatter root must include:
+<table or prose>
+```
+
+H1 is not part of the invoice grammar. The renderer supplies the invoice title from frontmatter.
+
+## 2. Frontmatter
+
+### 2.1 Required root keys
 
 ```yaml
 schema: ttyinv/v1
-invoice: ...
-from: ...
-to: ...
+invoice: {}
+from: {}
+to: {}
 ```
 
-Unknown schema fields are rejected.
+Unknown root keys are errors unless a later compatible v1 revision explicitly defines them.
 
-## 3. Frontmatter
+### 2.2 `schema`
 
-### 3.1 `invoice`
+The only v1 value is:
+
+```yaml
+schema: ttyinv/v1
+```
+
+A future incompatible dialect must use a new identifier such as `ttyinv/v2`.
+
+### 2.3 `invoice`
+
+Required:
 
 ```yaml
 invoice:
-  number: INV-2026-004       # required
-  title: Invoice             # optional; default Invoice
-  issued: 20 Aug 2026        # required; rendered verbatim
-  due: 3 Sep 2026            # optional; rendered verbatim
-  terms: Net 14              # optional
-  currency: EUR              # required; three-letter code
-  locale: en-GB              # optional; default en-GB
+  number: INV-2026-001
+  issued: 2026-01-15
+  currency: EUR
 ```
 
-The invoice has one payable currency. `locale` controls monetary and numeric formatting.
+Optional:
 
-### 3.2 Parties
+```yaml
+  title: Consulting services
+  due: 2026-01-29
+  locale: en-GB
+  reference: PROJECT-EXAMPLE
+  terms: Net 14
+```
 
-`from` and `to` share the same schema:
+Rules:
+
+- dates use ISO `YYYY-MM-DD`;
+- `currency` is one uppercase three-letter code;
+- the invoice currency is the payable currency;
+- `locale` affects display formatting, not calculation semantics;
+- `number`, `reference`, and `terms` are text, not numbers.
+
+### 2.4 Parties
+
+`from` and `to` share the party shape:
 
 ```yaml
 from:
-  name: Example Studio       # required
-  logo: ./assets/logo.svg    # optional
-  address:                   # optional
+  name: Northstar Studio
+  address:
     - 10 Example Street
     - Paris
     - France
-  identifiers:               # optional ordered mapping
+  identifiers:
     VAT: FR00000000000
-  email: billing@example.com # optional
-  website: https://example.com # optional
+  email: billing@example.com
+  website: https://example.com
+  logo: ./assets/logo.svg
+  logo_alt: Northstar Studio mark
 ```
 
-Address entries and identifier values are rendered in their authored order.
+Only `name` is required. `address` is an ordered list. `identifiers` is an ordered label/value mapping displayed as authored. `logo` is a local asset path resolved under the path rules in section 8.
 
-### 3.3 Payment methods
+### 2.5 Payment methods
 
 ```yaml
 payment:
   title: Payment
   methods:
-    - title: SEPA
+    - title: Bank transfer
       fields:
-        Beneficiary: Example Studio
-        IBAN: DE00 0000 0000 0000 0000 00
-        BIC: EXAMPLE0XXX
-        Bank: Example Bank
+        Beneficiary: Northstar Studio
+        Reference: INV-2026-001
+        Instructions: Contact billing@example.com for transfer details
 ```
 
-`fields` is an arbitrary ordered mapping of labels to string values. Payment methods render inside a dedicated ASCII-style frame near the end of the invoice.
+Payment fields are generic label/value pairs. The core schema does not interpret an IBAN, routing number, UPI handle, payment URL, or other payment rail. Payment renders in its own terminal-style frame near the closing edge of the final page.
 
-### 3.4 Signature
+### 2.6 Settlement records
+
+A settlement records what happened after issuance and does not change the original invoice total:
+
+```yaml
+settlements:
+  - date: 2026-02-01
+    paid:
+      amount: "5200.00"
+      currency: EUR
+    received:
+      amount: "574100.25"
+      currency: INR
+```
+
+Amounts are decimal strings. A settlement is informational and never triggers a live conversion.
+
+### 2.7 Signature
 
 ```yaml
 signature:
   image: ./assets/signature.svg
-  name: Avery Example
-  label: Authorised signature
+  name: Example Person
+  label: Authorized signature
+  alt: Signature of Example Person
 ```
 
-All signature fields are optional, but the section is useful only when at least one is present. Local images are embedded into HTML.
+The image is embedded in self-contained HTML. The signature block follows Payment. Signature images are optional and must never be committed to the public repository when they identify a real person.
 
-### 3.5 Settlements
+### 2.8 Appearance
 
-Settlement information is typed frontmatter rather than a financial Markdown table, so it cannot be counted as new invoice revenue:
-
-```yaml
-settlements:
-  - date: 28 Sep 2026
-    paid:
-      amount: 5018.10
-      currency: EUR
-    received:
-      amount: 478000.00
-      currency: INR
-```
-
-`received` is optional. Settlements do not affect the invoice grand total.
-
-### 3.6 Appearance
+Portable documents may request supported appearance values:
 
 ```yaml
 appearance:
-  accent: "#2685d2"
-  font:
-    family: Invoice Mono
-    regular: ./assets/Mono-Regular.woff2
-    bold: ./assets/Mono-Bold.woff2
+  theme: light
+  font: Geist Mono
+  accent: "#50a6ed"
+  paper: "#ffffff"
+  ink: "#161618"
+  muted: "#68686f"
+  density: comfortable
 ```
 
-`accent` accepts an injection-safe CSS color value such as a hex color, named color, `rgb(...)`, `hsl(...)`, or `oklch(...)`. The CLI `--accent COLOR` overrides the frontmatter value. WOFF, WOFF2, TTF, and OTF font files can be embedded. When no font is configured, Geist Mono regular and semibold are the canonical defaults. Release distributions embed those webfonts; an unvendored source checkout may fall back to a locally installed Geist Mono or the system monospace stack with a warning. `ttyinv --list-fonts` lists installed families verified as monospace, and `--font FAMILY` embeds one of those families for a single render.
+CLI flags take precedence. `font` must resolve to an installed or bundled monospace font. Colors must pass the safe CSS color parser. `density` is `comfortable` or `compact`; it must not alter calculations or page size.
 
-## 4. Markdown body
+## 3. Sections
 
-### 4.1 Financial sections
-
-A level-two heading immediately followed by one GFM table defines a financial section:
+A level-two heading defines one named section:
 
 ```md
 ## Contract fees
-
-| Description | Days | Rate | Amount (EUR) |
-| :--- | ---: | ---: | ---: |
-| Systems engineering<br>August 2026 | 20 | 250.00 | auto |
 ```
 
-Rules:
+The visible label uses bracket notation and one common left inset:
 
-- The heading is rendered as a bracketed label inset from the left edge of the section rule, using the same label geometry as the Payment block.
-- The Markdown table header is rendered as written.
-- A financial section contains exactly one table and no additional body content.
-- Put notes or supporting prose in a separate level-two section.
-- Do not author a `TOTAL` row; `ttyinv` generates section and grand totals.
+```text
+[ Contract fees ]
+```
 
-### 4.2 Prose sections
+A heading followed by a GFM table is a table section. A heading followed by prose is a prose section. Section titles are presentation text and do not determine financial behavior by themselves.
 
-A level-two heading not followed immediately by a table defines a prose section:
+## 4. Tables
+
+### 4.1 Heading row
+
+Every table must include a Markdown heading row and separator row:
 
 ```md
-## Notes
-
-Payment is due within fourteen days. See the [previous invoice](./INV-003.pdf).
+| Description | Days | Rate | Amount (EUR) |
+| --- | ---: | ---: | ---: |
 ```
 
-The CommonMark parser supports paragraphs, lists, links, images, emphasis, code, blockquotes, and other normal Markdown constructs. Raw HTML is disabled. Escaped `<br>` in table cells is converted into a line break.
+The heading row is part of the visual output. Column alignment markers are honored. Tables remain visually borderless; precision comes from the shared column grid and horizontal rules.
 
-## 5. Table column semantics
+### 4.2 Description details
 
-Column labels are preserved visually. A small set of normalized labels participates in calculations.
+The literal `<br>` token may separate a primary description from secondary muted detail:
 
-Quantity aliases:
+```md
+| Systems consulting<br>1 Jan 2026 to 15 Jan 2026 | 8 | 650.00 | auto |
+```
+
+No other raw HTML extension is specified by v1.
+
+### 4.3 Financial table detection
+
+A table is financial when it contains an `Amount` column or a currency-qualified amount such as `Amount (EUR)`.
+
+When several amount columns exist, the column whose qualifier matches `invoice.currency` is payable. Other amount columns are informational source-currency values. If no qualifier matches, the final amount column is payable.
+
+### 4.4 Column aliases
+
+The following normalized headings participate in automatic calculation:
+
+Quantity:
 
 ```text
-Qty, Quantity, Days, Hours, Units
+Qty
+Quantity
+Days
+Hours
+Units
 ```
 
-Rate aliases:
+Unit price:
 
 ```text
-Rate, Unit price, Price
+Rate
+Unit price
+Unit_price
+Price
 ```
 
-Description aliases:
+Amount:
 
 ```text
-Description, Item, Service
+Amount
+Amount (CUR)
 ```
 
-An amount column is any header beginning with `Amount`, or the exact header `Total`.
+Other columns are rendered as authored and do not affect calculations.
 
-A financial section must resolve to exactly one payable amount column:
+### 4.5 Table layout
 
-- `Amount` is payable when it is the only amount column.
-- `Amount (<invoice currency>)` is payable.
-- Other currency-marked amount columns are source information.
+The renderer derives a deterministic `<colgroup>` from semantic headings. Description receives flexible space; quantitative columns receive stable right-aligned widths; the final payable amount shares a right edge with table rules and total blocks. Light and dark themes use identical geometry.
 
-Example for an EUR invoice:
+## 5. Money and calculations
+
+### 5.1 Decimal arithmetic
+
+Financial arithmetic uses decimal values, never binary floating-point values.
+
+### 5.2 Automatic amounts
+
+A payable amount cell that is blank or contains `auto` is calculated when both a recognized quantity and unit-price cell are numeric:
 
 ```text
-Amount (KZT) -> source amount
-Amount (EUR) -> payable amount
+line amount = quantity × unit price
 ```
 
-## 6. Amount calculation
+If calculation inputs are incomplete, `auto` is an error.
 
-For each row:
+### 5.3 Explicit amounts
 
-- blank or `auto` amount plus quantity and rate: calculate quantity × rate;
-- explicit amount plus quantity and rate: verify the values match within 0.005 currency units;
-- explicit amount without both quantity and rate: accept the amount;
-- no explicit amount and no calculable quantity/rate: error.
+A numeric amount is explicit. When quantity and unit price are also calculable:
 
-Arithmetic uses Python `Decimal`, not binary floating point.
+- matching explicit value: accepted;
+- differing explicit value: error by default;
+- `--trust-explicit`: use the authored value;
+- `--recalculate`: ignore the authored value and calculate.
 
-### 6.1 Policy flags
+The two flags are mutually exclusive.
 
-Default behavior rejects an explicit mismatch.
+### 5.4 Totals
 
-`--trust-explicit` retains the authored amount when it differs from quantity × rate.
+The renderer derives:
 
-`--recalculate` replaces an authored amount whenever quantity and rate are available.
+- each line amount;
+- each financial section subtotal where needed;
+- the invoice total due.
 
-The flags are mutually exclusive.
+Authors should not add `TOTAL` rows. Such rows are diagnosed because totals are generated consistently by the renderer. A single-section invoice may omit a redundant subtotal and show only `Total due`.
 
-## 7. Multi-currency behavior
+### 5.5 Explicit-only rows
 
-The invoice has one payable currency. Source-currency table values and settlement values may use other currencies.
+A row with a payable numeric amount and no quantity/rate inputs is valid. This supports reimbursements, credits, negotiated adjustments, source-currency conversions, and rounding corrections.
 
-Converted payable values must be authored explicitly. `ttyinv` does not perform exchange-rate lookup.
+### 5.6 No tax engine
 
-## 8. Assets and links
+`ttyinv/v1` has no jurisdiction-aware or arithmetic tax engine. Tax identifiers may be displayed through party identifiers. Authors who need a tax line may represent it as an explicit financial row, but `ttyinv` does not determine legal applicability, rates, reverse charge, filing language, or compliance.
 
-Paths are resolved relative to the source Markdown file.
+## 6. Output
 
-- Logos, signatures, Markdown images, and configured fonts are embedded as data URLs.
-- HTTP, HTTPS, `mailto:`, `data:`, and `#anchor` references are preserved.
-- Relative document links are rebased relative to HTML output.
-- For PDF, local document links become absolute `file:` URLs and generate a best-effort warning.
-- Missing local targets generate a warning.
-- Local linked documents are not embedded as PDF attachments in v1.
+### 6.1 Formats
 
-## 9. Output
+Supported output:
 
-- Page size: A4 only.
-- Default theme: light.
-- Optional theme: dark.
-- Both themes share geometry, typography metrics, label placement, and pagination.
-- HTML includes inline CSS and embedded configured assets.
-- PDF is printed from the same HTML through Chromium using Playwright.
+```text
+HTML
+PDF
+both
+```
 
-## 10. Non-goals
+HTML is self-contained: CSS, selected fonts, logos, signatures, and local invoice images are embedded. Linked documents remain links, not attachments.
 
-v1 does not include:
+### 6.2 A4
 
-- a web app or editor;
-- storage, authentication, or sending;
-- invoice-number allocation;
-- a tax engine;
-- exchange-rate fetching;
-- jurisdictional compliance claims;
-- embedded supporting-document attachments;
-- page sizes other than A4.
+V1 page size is A4 only. Light is the default PDF theme. Dark output must be requested explicitly.
+
+### 6.3 Page frame
+
+Every page has a terminal-style outer frame. The four junctions are constructed from intersecting strokes rather than font `+` glyphs. Junction centers and rule axes must align independently of the selected font.
+
+### 6.4 Borderless tables
+
+Tables do not have outer boxes or vertical cell borders. Header rules, ending rules, subtotal rules, and the total-due rule align to the same generated column grid.
+
+## 7. Pagination
+
+A conforming renderer should:
+
+- repeat `<thead>` on continuation pages;
+- avoid splitting rows when practical;
+- keep a section label with the beginning of its table;
+- keep totals together;
+- keep Payment and signature blocks together where practical;
+- move a closing block rather than shrink typography;
+- preserve the outer frame on every page.
+
+Pagination may differ between browser revisions, fonts, and operating systems; the relational geometry contract must still hold.
+
+## 8. Paths, assets, and links
+
+### 8.1 Resolution root
+
+Relative paths resolve from the directory containing the source Markdown file.
+
+### 8.2 Sandbox
+
+By default, local paths must resolve inside that directory after symlink resolution. Traversal outside the root is an error. `--allow-outside-root` is an explicit trust override.
+
+### 8.3 Remote content
+
+HTTP(S) links remain hyperlinks. The renderer does not fetch remote assets during invoice generation.
+
+### 8.4 PDF links
+
+Web, email, and fragment links should remain clickable. Relative local-document links are best effort in PDF because viewers enforce different policies. `ttyinv lint --require-link-targets` may be used to verify that local targets exist.
+
+## 9. Accessibility
+
+Self-contained HTML should include:
+
+- a declared language;
+- a document landmark;
+- semantic `<table>`, `<thead>`, `<tbody>`, and `<tfoot>` structures;
+- scoped table headings;
+- accessible captions or names for invoice tables;
+- meaningful alternative text for logos/signatures when supplied;
+- sufficient contrast warnings for parseable custom palettes;
+- ordinary link semantics.
+
+Decorative frame strokes are hidden from assistive technology.
+
+## 10. Determinism
+
+`--deterministic` removes volatile HTML metadata and normalizes PDF metadata and document IDs. Byte-for-byte reproducibility additionally requires fixed:
+
+- source Markdown and local assets;
+- selected font bytes;
+- `ttyinv` version;
+- Playwright/Chromium revision;
+- platform and rasterization environment.
+
+## 11. Diagnostics
+
+Diagnostics have:
+
+```text
+severity
+code
+message
+path
+line
+column
+hint
+```
+
+Human output follows the compiler-style shape:
+
+```text
+invoice.md:24:1: error[MONEY004]: explicit amount differs from quantity × rate
+```
+
+`ttyinv lint --json` emits the same data as JSON.
+
+## 12. Compatibility policy
+
+Within `ttyinv/v1`, changes are append-only and must preserve the financial meaning of every previously valid document.
+
+Allowed within v1:
+
+- new optional frontmatter fields;
+- new unambiguous heading aliases;
+- additional diagnostics;
+- accessibility improvements;
+- layout fixes that preserve documented geometry and semantics;
+- stricter rejection of unsafe paths or CSS injection.
+
+Not allowed within v1:
+
+- changing the meaning of an existing field or column;
+- silently changing which amount column is payable;
+- changing amount precedence or arithmetic;
+- removing a supported field;
+- interpreting prose as financial data;
+- enabling remote content fetches;
+- changing A4 to another default page size.
+
+An incompatible change requires a new schema identifier. A document must never be silently upgraded to a new financial interpretation.
