@@ -1,28 +1,26 @@
 ---
 schema: ttyinv/v1
 invoice:
-  number: EXAMPLE-2026-004
-  title: Invoice
-  issued: 20 Aug 2026
-  due: 3 Sep 2026
-  terms: Net 14
+  number: INV-2026-001
+  title: Consulting services
+  issued: 2026-01-15
+  due: 2026-01-29
   currency: EUR
   locale: en-GB
 from:
   name: Northstar Studio
-  logo: ./assets/example-mark.svg
   address:
     - 10 Example Street
-    - 75001 Paris
+    - Paris
     - France
   identifiers:
     VAT: FR00000000000
   email: billing@example.com
 to:
-  name: Example Customer GmbH
+  name: Acme Research Ltd
   address:
     - 20 Sample Road
-    - 10115 Berlin
+    - Berlin
     - Germany
   identifiers:
     VAT: DE000000000
@@ -32,22 +30,16 @@ payment:
     - title: Bank transfer
       fields:
         Beneficiary: Northstar Studio
-        IBAN: DE00 0000 0000 0000 0000 00
-        BIC: EXAMPLE0XXX
-        Bank: Example Bank
-signature:
-  image: ./assets/example-signature.svg
-  name: Avery Example
-  label: Authorised signature
-settlements: []
+        Reference: INV-2026-001
+        Instructions: Contact billing@example.com for transfer details
 ---
 
 ## Contract fees
 
 | Description | Days | Rate | Amount (EUR) |
-| :--- | ---: | ---: | ---: |
-| Systems consulting<br>1 Aug 2026 to 31 Aug 2026 | 20 | 250.00 | auto |
+| --- | ---: | ---: | ---: |
+| Systems consulting<br>1 Jan 2026 to 15 Jan 2026 | 8 | 650.00 | auto |
 
 ## Notes
 
-Payment is due within fourteen days. See the [previous invoice](./previous-invoice.pdf).
+Payment is due within fourteen days.
