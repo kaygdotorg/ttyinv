@@ -1,0 +1,42 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.DS_Store
+
+# Generated output. Invoices may contain private information.
+*.pdf
+*.html
+
+# Private source material and local working directories.
+private/
+reference/
+real-invoices/
+examples/private/
+*.private.md
+*.real.md
+
+# Raster assets are ignored by default to reduce accidental inclusion of
+# scanned signatures, invoice screenshots, IDs, and other personal material.
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.tif
+*.tiff
+
+# Secrets and credentials.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore

@@ -1,0 +1,247 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .colors import validate_css_color
+from .errors import TtyinvError
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class FontConfig(StrictModel):
+    family: str | None = None
+    regular: str | None = None
+    bold: str | None = None
+
+
+class AppearanceConfig(StrictModel):
+    accent: str | None = None
+    font: FontConfig | None = None
+
+    @field_validator("accent")
+    @classmethod
+    def validate_accent(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            return validate_css_color(value)
+        except TtyinvError as exc:
+            raise ValueError(str(exc)) from exc
+
+
+class Party(StrictModel):
+    name: str
+    address: list[str] = Field(default_factory=list)
+    identifiers: dict[str, str] = Field(default_factory=dict)
+    email: str | None = None
+    website: str | None = None
+    logo: str | None = None
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def normalise_address(cls, value: object) -> object:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [line.strip() for line in value.splitlines() if line.strip()]
+        return value
+
+    @field_validator("identifiers", mode="before")
+    @classmethod
+    def stringify_identifiers(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+
+class InvoiceMeta(StrictModel):
+    number: str
+    title: str = "Invoice"
+    issued: str
+    due: str | None = None
+    terms: str | None = None
+    currency: str
+    locale: str = "en-GB"
+
+    @field_validator("currency")
+    @classmethod
+    def normalise_currency(cls, value: str) -> str:
+        value = value.upper()
+        if len(value) != 3 or not value.isalpha():
+            raise ValueError("currency must be a three-letter ISO-style code")
+        return value
+
+
+class PaymentMethod(StrictModel):
+    title: str
+    fields: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("fields", mode="before")
+    @classmethod
+    def stringify_fields(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {str(key): str(item) for key, item in value.items()}
+        return value
+
+
+class PaymentConfig(StrictModel):
+    title: str = "Payment"
+    methods: list[PaymentMethod] = Field(default_factory=list)
+
+
+class SignatureConfig(StrictModel):
+    image: str | None = None
+    name: str | None = None
+    label: str | None = None
+
+
+class MoneyValue(StrictModel):
+    amount: Decimal
+    currency: str
+
+    @field_validator("currency")
+    @classmethod
+    def normalise_currency(cls, value: str) -> str:
+        value = value.upper()
+        if len(value) != 3 or not value.isalpha():
+            raise ValueError("currency must be a three-letter ISO-style code")
+        return value
+
+
+class Settlement(StrictModel):
+    date: str
+    paid: MoneyValue
+    received: MoneyValue | None = None
+
+
+class InvoiceFrontmatter(StrictModel):
+    schema_version: Literal["ttyinv/v1"] = Field(alias="schema")
+    invoice: InvoiceMeta
+    issuer: Party = Field(alias="from")
+    recipient: Party = Field(alias="to")
+    payment: PaymentConfig | None = None
+    signature: SignatureConfig | None = None
+    settlements: list[Settlement] = Field(default_factory=list)
+    appearance: AppearanceConfig | None = None
+
+
+Alignment = Literal["left", "right", "center"] | None
+
+
+@dataclass(slots=True)
+class TableCell:
+    source: str
+    html: str
+
+
+@dataclass(slots=True)
+class ParsedTable:
+    headers: list[TableCell]
+    align: list[Alignment]
+    rows: list[list[TableCell]]
+
+
+@dataclass(slots=True)
+class FinancialSection:
+    title: str
+    table: ParsedTable
+    kind: Literal["financial"] = "financial"
+
+
+@dataclass(slots=True)
+class ProseSection:
+    title: str
+    html: str
+    kind: Literal["prose"] = "prose"
+
+
+InvoiceSection = FinancialSection | ProseSection
+
+
+@dataclass(slots=True)
+class ParsedInvoice:
+    source_path: Path
+    source_directory: Path
+    frontmatter: InvoiceFrontmatter
+    preamble_html: str
+    sections: list[InvoiceSection]
+
+
+@dataclass(slots=True)
+class CalculatedCell:
+    html: str
+    plain: str
+    numeric: bool = False
+
+
+AmountSource = Literal["calculated", "explicit", "trusted-explicit"]
+
+
+@dataclass(slots=True)
+class CalculatedRow:
+    cells: list[CalculatedCell]
+    amount: Decimal
+    amount_source: AmountSource
+
+
+@dataclass(slots=True)
+class CalculatedFinancialSection:
+    title: str
+    headers: list[str]
+    align: list[Alignment]
+    rows: list[CalculatedRow]
+    total: Decimal
+    payable_amount_column: int
+    kind: Literal["financial"] = "financial"
+
+
+@dataclass(slots=True)
+class CalculatedProseSection:
+    title: str
+    html: str
+    kind: Literal["prose"] = "prose"
+
+
+CalculatedSection = CalculatedFinancialSection | CalculatedProseSection
+
+
+@dataclass(slots=True)
+class CalculatedInvoice:
+    source_path: Path
+    source_directory: Path
+    frontmatter: InvoiceFrontmatter
+    preamble_html: str
+    sections: list[CalculatedSection]
+    grand_total: Decimal
+
+
+@dataclass(slots=True)
+class AmountPolicy:
+    trust_explicit: bool = False
+    recalculate: bool = False
+
+
+@dataclass(slots=True)
+class RenderOptions:
+    theme: Literal["light", "dark"]
+    output_path: Path
+    for_pdf: bool = False
+    accent_override: str | None = None
+    font_family_override: str | None = None
+
+
+@dataclass(slots=True)
+class RenderResult:
+    html: str
+    warnings: list[str] = field(default_factory=list)

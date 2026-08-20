@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ttyinv"
+version = "0.1.6"
+description = "Render strict Markdown invoices to self-contained HTML and A4 PDF."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+authors = []
+keywords = ["invoice", "markdown", "pdf", "html", "cli", "terminal"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial",
+  "Topic :: Text Processing :: Markup :: Markdown",
+]
+dependencies = [
+  "babel>=2.14,<3",
+  "beautifulsoup4>=4.12,<5",
+  "click>=8.1,<9",
+  "fonttools>=4.55,<5",
+  "markdown-it-py>=3.0,<5",
+  "playwright>=1.48,<2",
+  "pydantic>=2.10,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<10",
+  "Pillow>=10,<12",
+  "build>=1.2,<2",
+]
+
+[project.scripts]
+ttyinv = "ttyinv.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.package-data]
+ttyinv = ["fonts/*.woff2", "fonts/OFL.txt"]
