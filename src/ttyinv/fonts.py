@@ -144,7 +144,7 @@ def inspect_font(path: Path) -> FontFace:
 def _fc_font_paths() -> Iterable[Path]:
     try:
         completed = subprocess.run(
-            ["fc-list", "--format=%{file}\n"],
+            ["fc-list", "--format=%{file}\\n"],
             check=False,
             capture_output=True,
             text=True,
