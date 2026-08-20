@@ -1,46 +1,53 @@
 ---
 schema: ttyinv/v1
 invoice:
-  number: EXAMPLE-2026-005
-  title: Invoice
-  issued: 20 Sep 2026
-  due: 4 Oct 2026
+  number: INV-2026-002
+  title: Engineering services and travel
+  issued: 2026-03-20
+  due: 2026-04-03
   currency: EUR
   locale: en-GB
 from:
-  name: Northstar Studio
-  address: [10 Example Street, 75001 Paris, France]
-  identifiers: { VAT: FR00000000000 }
+  name: Atlas Systems Cooperative
+  address:
+    - 5 Demonstration Lane
+    - Dublin
+    - Ireland
+  identifiers:
+    VAT: IE0000000X
+  email: finance@example.com
 to:
-  name: Example Customer GmbH
-  address: [20 Sample Road, 10115 Berlin, Germany]
-  identifiers: { VAT: DE000000000 }
+  name: Sample Observatory SAS
+  address:
+    - 17 Example Quai
+    - Lyon
+    - France
+  identifiers:
+    VAT: FR00000000001
 payment:
   title: Payment
   methods:
-    - title: Bank transfer
+    - title: Transfer
       fields:
-        Beneficiary: Northstar Studio
-        Reference: EXAMPLE-2026-005
-settlements:
-  - date: 28 Sep 2026
-    paid: { amount: 5132.70, currency: EUR }
-    received: { amount: 478000.00, currency: INR }
+        Beneficiary: Atlas Systems Cooperative
+        Reference: INV-2026-002
+        Instructions: Contact finance@example.com for remittance details
 ---
 
-## Contract fees
+## Engineering fees
 
 | Description | Days | Rate | Amount (EUR) |
-| :--- | ---: | ---: | ---: |
-| Systems consulting<br>1 Sep 2026 to 30 Sep 2026 | 20 | 250.00 | auto |
+| --- | ---: | ---: | ---: |
+| Reliability engineering<br>3 Mar 2026 to 14 Mar 2026 | 10 | 720.00 | auto |
 
-## Operating expenses
+## Travel expenses
 
-| Description | Amount (KZT) | Amount (EUR) |
-| :--- | ---: | ---: |
-| Airport meal | 7100.00 | 12.70 |
-| Ground transport | 2800.00 | 5.40 |
+| Description | Amount (JPY) | Amount (EUR) |
+| --- | ---: | ---: |
+| Airport rail | 4200 | 25.90 |
+| Hotel transfer | 6800 | 41.93 |
+| Working dinner | 9100 | 56.11 |
 
 ## Notes
 
-Source-currency conversions are explicitly supplied and are not looked up by `ttyinv`.
+Source-currency values are informational; the explicitly supplied EUR values are payable.
