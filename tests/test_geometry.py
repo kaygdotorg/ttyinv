@@ -14,7 +14,6 @@ def _render(tmp_path: Path) -> str:
         RenderOptions(
             theme="dark",
             output_path=tmp_path / "invoice.html",
-            font_family_override="DejaVu Sans Mono",
         ),
     ).html
 
