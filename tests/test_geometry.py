@@ -19,14 +19,15 @@ def _render(tmp_path: Path) -> str:
     ).html
 
 
-def test_page_frame_keeps_all_edges_and_vector_junctions(tmp_path: Path) -> None:
+def test_page_frame_uses_one_border_and_typographic_corners(tmp_path: Path) -> None:
     html = _render(tmp_path)
-    for edge in ("top", "right", "bottom", "left"):
-        assert f'class="frame-edge {edge}"' in html
+    assert 'class="page-frame"' in html
     for corner in ("tl", "tr", "bl", "br"):
-        assert f'class="frame-junction {corner}"' in html
-    assert "frame-corner" not in html
-    assert ">+</span>" not in html
+        assert f'class="frame-corner {corner}"' in html
+    assert html.count(">+</span>") == 4
+    assert "frame-edge" not in html
+    assert "frame-junction" not in html
+    assert "border: var(--stroke) dashed var(--rule)" in html
 
 
 def test_table_and_total_share_the_same_five_column_grid(tmp_path: Path) -> None:
@@ -38,8 +39,8 @@ def test_table_and_total_share_the_same_five_column_grid(tmp_path: Path) -> None
     assert 'class="summary-label" style="grid-column:4 / 5"' in html
     assert 'class="summary-amount" style="grid-column:5 / 6"' in html
     assert "table-end-rule" in html
-    assert "text-align: right;" in html
-    assert "white-space: nowrap;" in html
+    assert "text-align: right" in html
+    assert "white-space: nowrap" in html
 
 
 def test_invoice_tables_have_no_outer_border(tmp_path: Path) -> None:
@@ -56,9 +57,11 @@ def test_single_financial_section_has_only_grand_total(tmp_path: Path) -> None:
     assert "Total due" in html
 
 
-def test_section_titles_share_the_payment_indent(tmp_path: Path) -> None:
+def test_section_titles_share_payment_alignment(tmp_path: Path) -> None:
     html = _render(tmp_path)
     assert "[ Contract fees ]" in html
     assert "[ Notes ]" in html
-    assert "[ Payment ]" in html
+    assert "[ Payment Methods ]" in html
     assert "left: 4mm" in html
+    assert "top: 0" in html
+    assert "translateY(-50%)" in html
