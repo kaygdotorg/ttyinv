@@ -19,7 +19,9 @@ def test_css_injection_is_rejected(value: str) -> None:
 
 def test_palette_overrides_do_not_change_unspecified_tokens() -> None:
     palette = resolve_palette("dark", accent="#ff6b57")
-    assert palette.paper == "#161618"
+    assert palette.paper == "#121214"
+    assert palette.ink == "#f2f2f3"
+    assert palette.muted == "#aaaaaf"
     assert palette.accent == "#ff6b57"
 
 
