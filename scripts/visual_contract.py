@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Assert ttyinv's relational geometry without storing a private reference image.
 
-The check deliberately tests relationships rather than fragile screenshot bytes:
-outer-frame junctions share axes with their rules, table columns share a right
-edge with totals, section labels share one inset, and the page keeps A4 shape.
-An optional screenshot/report can still be uploaded by CI for human review.
+The check tests relationships rather than fragile screenshot bytes: the literal
+corner glyphs are centered on the single dashed page frame, section labels are
+centered on their section rules, table columns share a right edge with totals,
+and the page keeps A4 shape. An optional screenshot/report can still be uploaded
+by CI for human review.
 """
 
 from __future__ import annotations
@@ -51,6 +52,10 @@ def right(value: dict[str, float]) -> float:
     return value["x"] + value["width"]
 
 
+def bottom(value: dict[str, float]) -> float:
+    return value["y"] + value["height"]
+
+
 def require(condition: bool, message: str, failures: list[str]) -> None:
     if not condition:
         failures.append(message)
@@ -65,27 +70,38 @@ def inspect(page: Page) -> dict[str, Any]:
     metrics["page"] = {**viewport, "ratio": ratio}
     require(abs(ratio - 210 / 297) < 0.025, f"page ratio {ratio:.5f} is not A4-like", failures)
 
-    lines = {side: box(page, f'[data-ttyinv-frame-line="{side}"]') for side in ("top", "right", "bottom", "left")}
-    corners = {name: box(page, f'[data-ttyinv-frame-corner="{name}"]') for name in ("top-left", "top-right", "bottom-right", "bottom-left")}
-    metrics["frame_lines"] = lines
+    frame = box(page, ".page-frame")
+    corners = {
+        "top-left": box(page, ".frame-corner.tl"),
+        "top-right": box(page, ".frame-corner.tr"),
+        "bottom-right": box(page, ".frame-corner.br"),
+        "bottom-left": box(page, ".frame-corner.bl"),
+    }
+    metrics["frame"] = frame
     metrics["frame_corners"] = corners
-    require(all(lines.values()), "expected four outer frame lines", failures)
-    require(all(corners.values()), "expected four outer frame junctions", failures)
+    require(frame is not None, "expected one outer page frame", failures)
+    require(all(corners.values()), "expected four typographic frame corners", failures)
 
-    if all(lines.values()) and all(corners.values()):
-        top, right_line, bottom, left_line = lines["top"], lines["right"], lines["bottom"], lines["left"]
+    if frame and all(corners.values()):
         tl, tr, br, bl = corners["top-left"], corners["top-right"], corners["bottom-right"], corners["bottom-left"]
-        assert top and right_line and bottom and left_line and tl and tr and br and bl
-        require(close(center_y(tl), center_y(top)) and close(center_y(tr), center_y(top)), "top junctions do not share the top-rule axis", failures)
-        require(close(center_y(bl), center_y(bottom)) and close(center_y(br), center_y(bottom)), "bottom junctions do not share the bottom-rule axis", failures)
-        require(close(center_x(tl), center_x(left_line)) and close(center_x(bl), center_x(left_line)), "left junctions do not share the left-rule axis", failures)
-        require(close(center_x(tr), center_x(right_line)) and close(center_x(br), center_x(right_line)), "right junctions do not share the right-rule axis", failures)
+        assert tl and tr and br and bl
+        require(close(center_x(tl), frame["x"]) and close(center_y(tl), frame["y"]), "top-left + is not centered on the frame intersection", failures)
+        require(close(center_x(tr), right(frame)) and close(center_y(tr), frame["y"]), "top-right + is not centered on the frame intersection", failures)
+        require(close(center_x(bl), frame["x"]) and close(center_y(bl), bottom(frame)), "bottom-left + is not centered on the frame intersection", failures)
+        require(close(center_x(br), right(frame)) and close(center_y(br), bottom(frame)), "bottom-right + is not centered on the frame intersection", failures)
 
-    label_boxes = boxes(page, "[data-ttyinv-section-label]")
-    metrics["section_labels"] = label_boxes
-    if len(label_boxes) > 1:
-        origin = label_boxes[0]["x"]
-        require(all(close(item["x"], origin) for item in label_boxes[1:]), "section labels do not share one left inset", failures)
+    label_reports: list[dict[str, Any]] = []
+    label_locators = page.locator("[data-ttyinv-section-label]").all()
+    for label in label_locators:
+        label_box = label.bounding_box()
+        parent_box = label.locator("xpath=..").bounding_box()
+        if label_box and parent_box:
+            label_reports.append({"label": label_box, "section": parent_box})
+            require(close(center_y(label_box), parent_box["y"]), "section label is not vertically centered on its ASCII rule", failures)
+    metrics["section_labels"] = label_reports
+    if len(label_reports) > 1:
+        origin = label_reports[0]["label"]["x"]
+        require(all(close(item["label"]["x"], origin) for item in label_reports[1:]), "section labels do not share one left inset", failures)
 
     table_reports: list[dict[str, Any]] = []
     for table in page.locator("[data-ttyinv-table]").all():
