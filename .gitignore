@@ -1,36 +1,49 @@
-.venv/
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
 build/
 dist/
 *.egg-info/
-.DS_Store
 
-# Generated output. Invoices may contain private information.
+# Generated invoice output
 *.pdf
 *.html
-
-# Private source material and local working directories.
-private/
-reference/
-real-invoices/
-examples/private/
-*.private.md
-*.real.md
-
-# Raster assets are ignored by default to reduce accidental inclusion of
-# scanned signatures, invoice screenshots, IDs, and other personal material.
 *.png
 *.jpg
 *.jpeg
 *.webp
+*.gif
 *.tif
 *.tiff
 
-# Secrets and credentials.
+# Downloaded or user-supplied font binaries
+*.ttf
+*.otf
+*.woff
+*.woff2
+
+# Private workspaces and invoice sources
+private/
+_private/
+invoices/
+invoice-data/
+customer-data/
+real-fixtures/
+references-private/
+calibration-private/
+*.private.md
+*.secret.md
+
+# Credentials and environment files
 .env
 .env.*
 !.env.example
@@ -40,3 +53,23 @@ examples/private/
 *.pfx
 *.jks
 *.keystore
+*.crt
+*.cer
+id_rsa*
+id_ed25519*
+credentials*.json
+service-account*.json
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local visual and release artifacts
+artifacts/
+release/
+visual-report.json
+SHA256SUMS.txt

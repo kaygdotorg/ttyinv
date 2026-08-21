@@ -1,26 +1,26 @@
 ---
 schema: ttyinv/v1
 invoice:
-  number: EXAMPLE-2026-0417
-  title: Invoice
-  issued: 12 Jun 2026
-  due: 26 Jun 2026
-  terms: Net 14
+  number: TTY-2026-0417
+  title: Platform services
+  issued: 2026-06-12
+  due: 2026-06-26
   currency: EUR
   locale: en-GB
+  terms: Net 14
 from:
-  name: Terminal Works
-  logo: ./assets/example-mark.svg
+  name: Terminal Works SAS
   address:
-    - 15 Sample Avenue
+    - 15 Example Rue
     - 75016 Paris
     - France
   identifiers:
-    VAT: FR00000000000
+    VAT: FR00000000002
+  email: billing@example.com
 to:
-  name: Example Automotive S.p.A.
+  name: Demonstration Motors S.p.A.
   address:
-    - 4 Prototype Way
+    - 4 Prototype Via
     - 41053 Maranello
     - Italy
   identifiers:
@@ -28,26 +28,21 @@ to:
 payment:
   title: Payment
   methods:
-    - title: Bank transfer
+    - title: Transfer
       fields:
-        Beneficiary: Terminal Works
-        IBAN: FR00 0000 0000 0000 0000 000
-        BIC: EXAMPLE0XXX
-        Bank: Example Bank
-signature:
-  image: ./assets/example-signature.svg
-  name: Avery Example
-  label: Authorised signature
+        Beneficiary: Terminal Works SAS
+        Reference: TTY-2026-0417
+        Instructions: Contact billing@example.com for remittance details
 ---
 
-## Contract fees
+## Platform services
 
 | Description | Qty | Unit price | Code | Amount (EUR) |
-| :--- | ---: | ---: | :--- | ---: |
-| Platform subscription<br>112 seats, 1 Jun 2026 to 30 Jun 2026 | 112 | 21.04 | CORE | auto |
-| Connector sync - metered<br>48,200 records ingested above the plan allowance | 48.2 | 3.50 | MTR | auto |
+| --- | ---: | ---: | ---: | ---: |
+| Platform team<br>112 seats, 1 Jun 2026 to 30 Jun 2026 | 112 | 21.04 | TEAM | auto |
+| Connector sync<br>48,200 records above the plan allowance | 48.2 | 3.50 | METERED | auto |
 | Onboarding and data migration<br>One-off implementation, delivered 4 Jun 2026 | 1 | 1450.00 | SETUP | auto |
 
 ## Notes
 
-Payment is due within fourteen days.
+Thank you. Please include the invoice reference with payment.

@@ -1,24 +1,43 @@
-.PHONY: fonts check-release-fonts release test privacy check example clean
+PYTHON ?= python3
+VENV ?= .venv
+PY := $(VENV)/bin/python
+PIP := $(VENV)/bin/pip
 
-fonts:
-	python scripts/vendor_geist_mono.py
+.PHONY: install test lint privacy schema visual build check clean
 
-check-release-fonts:
-	python scripts/check_release_fonts.py
+install:
+	$(PYTHON) -m venv $(VENV)
+	$(PIP) install --upgrade pip
+	$(PIP) install -c constraints-release.txt -e '.[dev]'
 
-release: fonts check-release-fonts
-	python -m build
+# Unit tests do not require a browser.
+test:
+	$(PY) -m pytest --cov=ttyinv --cov-report=term-missing
+
+lint:
+	@find examples -name '*.md' -print0 | while IFS= read -r -d '' file; do \
+		$(PY) -m ttyinv lint "$$file" || exit 1; \
+	done
 
 privacy:
-	python scripts/privacy_check.py
+	$(PY) scripts/privacy_check.py .
 
-test:
-	PYTHONPATH=src pytest
+schema:
+	$(PY) -m ttyinv schema | $(PY) -m json.tool >/dev/null
 
-check: privacy test
+visual:
+	$(PY) -m playwright install chromium
+	$(PY) scripts/vendor_geist_mono.py
+	rm -rf artifacts && mkdir -p artifacts
+	$(PY) -m ttyinv render examples/reference.md --format both --theme dark --deterministic --output artifacts/reference
+	$(PY) scripts/visual_contract.py artifacts/reference.html --screenshot artifacts/reference.png --report artifacts/visual-report.json
 
-example:
-	PYTHONPATH=src python -m ttyinv examples/simple.md --format both
+build:
+	rm -rf build dist
+	$(PY) -m build
+
+check: test lint privacy schema
 
 clean:
-	rm -rf build dist .pytest_cache **/__pycache__ examples/*.html examples/*.pdf
+	rm -rf $(VENV) build dist artifacts .pytest_cache .coverage htmlcov
+	find . -type d -name __pycache__ -prune -exec rm -rf {} +

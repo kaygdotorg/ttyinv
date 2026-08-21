@@ -1,7 +1,7 @@
 ---
 schema: ttyinv/v1
 invoice:
-  number: INV-2026-002
+  number: INV-2026-103
   title: Engineering services and travel
   issued: 2026-03-20
   due: 2026-04-03
@@ -30,7 +30,7 @@ payment:
     - title: Transfer
       fields:
         Beneficiary: Atlas Systems Cooperative
-        Reference: INV-2026-002
+        Reference: INV-2026-103
         Instructions: Contact finance@example.com for remittance details
 ---
 
@@ -50,4 +50,4 @@ payment:
 
 ## Notes
 
-Source-currency values are informational; the explicitly supplied EUR values are payable.
+Source-currency amounts are informational. The explicitly supplied EUR column is payable and no live exchange-rate lookup is performed.

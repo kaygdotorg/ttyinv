@@ -5,7 +5,12 @@ from click.testing import CliRunner
 
 from ttyinv.cli import main
 from ttyinv.errors import TtyinvError
-from ttyinv.fonts import list_monospace_families, system_font_assets
+from ttyinv.fonts import (
+    SUPPORTED_FONT_FAMILIES,
+    list_monospace_families,
+    system_font_assets,
+    validate_supported_font_family,
+)
 
 
 def test_lists_verified_system_monospace_fonts() -> None:
@@ -32,7 +37,14 @@ def test_list_fonts_cli_does_not_require_invoice() -> None:
     assert "DejaVu Sans Mono" in result.output
 
 
-def test_cli_accepts_accent_and_font(tmp_path: Path) -> None:
+def test_supported_font_set_is_calibrated_and_rejects_arbitrary_system_fonts() -> None:
+    assert SUPPORTED_FONT_FAMILIES == ("Geist Mono", "Azeret Mono", "Maple Mono")
+    assert validate_supported_font_family("maple mono") == "Maple Mono"
+    with pytest.raises(TtyinvError, match="not in ttyinv's calibrated font set"):
+        validate_supported_font_family("DejaVu Sans Mono")
+
+
+def test_cli_accepts_accent_without_changing_font_contract(tmp_path: Path) -> None:
     output = tmp_path / "invoice"
     result = CliRunner().invoke(
         main,
@@ -40,8 +52,6 @@ def test_cli_accepts_accent_and_font(tmp_path: Path) -> None:
             "examples/reference.md",
             "--format",
             "html",
-            "--font",
-            "DejaVu Sans Mono",
             "--accent",
             "oklch(72% 0.19 35)",
             "--output",
@@ -51,4 +61,3 @@ def test_cli_accepts_accent_and_font(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     html = output.with_suffix(".html").read_text(encoding="utf-8")
     assert "oklch(72% 0.19 35)" in html
-    assert "ttyinv DejaVu Sans Mono" in html

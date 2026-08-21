@@ -1,0 +1,259 @@
+{
+  "$defs": {
+    "font": {
+      "additionalProperties": false,
+      "properties": {
+        "bold": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "regular": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "money": {
+      "additionalProperties": false,
+      "properties": {
+        "amount": {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        "currency": {
+          "pattern": "^[A-Za-z]{3}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "amount",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "party": {
+      "additionalProperties": false,
+      "properties": {
+        "address": {
+          "items": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "type": "array"
+        },
+        "email": {
+          "type": "string"
+        },
+        "identifiers": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "type": "object"
+        },
+        "logo": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "website": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "paymentMethod": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number"
+            ]
+          },
+          "type": "object"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "fields"
+      ],
+      "type": "object"
+    },
+    "settlement": {
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "type": "string"
+        },
+        "paid": {
+          "$ref": "#/$defs/money"
+        },
+        "received": {
+          "$ref": "#/$defs/money"
+        }
+      },
+      "required": [
+        "date",
+        "paid"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/kaygdotorg/ttyinv/blob/main/schema/ttyinv-v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "appearance": {
+      "additionalProperties": false,
+      "properties": {
+        "accent": {
+          "type": "string"
+        },
+        "density": {
+          "enum": [
+            "comfortable",
+            "compact"
+          ]
+        },
+        "font": {
+          "$ref": "#/$defs/font"
+        },
+        "ink": {
+          "type": "string"
+        },
+        "muted": {
+          "type": "string"
+        },
+        "paper": {
+          "type": "string"
+        },
+        "rule": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "from": {
+      "$ref": "#/$defs/party"
+    },
+    "invoice": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "pattern": "^[A-Za-z]{3}$",
+          "type": "string"
+        },
+        "due": {
+          "type": "string"
+        },
+        "issued": {
+          "type": "string"
+        },
+        "kind": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "gst"
+          ]
+        },
+        "locale": {
+          "default": "en-GB",
+          "type": "string"
+        },
+        "number": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "terms": {
+          "type": "string"
+        },
+        "title": {
+          "default": "Invoice",
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "issued",
+        "currency"
+      ],
+      "type": "object"
+    },
+    "payment": {
+      "additionalProperties": false,
+      "properties": {
+        "methods": {
+          "items": {
+            "$ref": "#/$defs/paymentMethod"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "Payment Methods",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "schema": {
+      "const": "ttyinv/v1"
+    },
+    "settlements": {
+      "items": {
+        "$ref": "#/$defs/settlement"
+      },
+      "type": "array"
+    },
+    "signature": {
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "to": {
+      "$ref": "#/$defs/party"
+    }
+  },
+  "required": [
+    "schema",
+    "invoice",
+    "from",
+    "to"
+  ],
+  "title": "ttyinv/v1 invoice frontmatter",
+  "type": "object",
+  "x-ttyinv-markdown": {
+    "calculation": "Blank or auto Amount values are calculated from Quantity/Qty/Days/Hours × Rate/Unit price.",
+    "financialTable": "A GFM table with an Amount or Amount (CUR) column is financial.",
+    "invoiceKinds": "standard renders the invoice total in words; gst additionally renders the received settlement amount in words.",
+    "rawHtml": "Raw HTML is excluded except the literal <br> separator inside table cells.",
+    "sectionHeading": "Level-two headings (##) define sections."
+  }
+}

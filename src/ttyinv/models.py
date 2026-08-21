@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -21,13 +22,21 @@ class FontConfig(StrictModel):
     bold: str | None = None
 
 
+Density = Literal["comfortable", "compact"]
+
+
 class AppearanceConfig(StrictModel):
     accent: str | None = None
+    paper: str | None = None
+    ink: str | None = None
+    muted: str | None = None
+    rule: str | None = None
+    density: Density | None = None
     font: FontConfig | None = None
 
-    @field_validator("accent")
+    @field_validator("accent", "paper", "ink", "muted", "rule")
     @classmethod
-    def validate_accent(cls, value: str | None) -> str | None:
+    def validate_color(cls, value: str | None) -> str | None:
         if value is None:
             return None
         try:
@@ -51,6 +60,8 @@ class Party(StrictModel):
             return []
         if isinstance(value, str):
             return [line.strip() for line in value.splitlines() if line.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(line).strip() for line in value if str(line).strip()]
         return value
 
     @field_validator("identifiers", mode="before")
@@ -65,12 +76,22 @@ class Party(StrictModel):
 
 class InvoiceMeta(StrictModel):
     number: str
+    kind: Literal["standard", "gst"] = "standard"
     title: str = "Invoice"
     issued: str
     due: str | None = None
     terms: str | None = None
     currency: str
     locale: str = "en-GB"
+
+    @field_validator("issued", "due", mode="before")
+    @classmethod
+    def normalise_date_scalar(cls, value: object) -> object:
+        if value is None or isinstance(value, str):
+            return value
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
 
     @field_validator("currency")
     @classmethod
@@ -96,7 +117,7 @@ class PaymentMethod(StrictModel):
 
 
 class PaymentConfig(StrictModel):
-    title: str = "Payment"
+    title: str = "Payment Methods"
     methods: list[PaymentMethod] = Field(default_factory=list)
 
 
@@ -124,6 +145,15 @@ class Settlement(StrictModel):
     paid: MoneyValue
     received: MoneyValue | None = None
 
+    @field_validator("date", mode="before")
+    @classmethod
+    def normalise_date_scalar(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
+
 
 class InvoiceFrontmatter(StrictModel):
     schema_version: Literal["ttyinv/v1"] = Field(alias="schema")
@@ -143,6 +173,8 @@ Alignment = Literal["left", "right", "center"] | None
 class TableCell:
     source: str
     html: str
+    line: int | None = None
+    column: int | None = None
 
 
 @dataclass(slots=True)
@@ -150,12 +182,14 @@ class ParsedTable:
     headers: list[TableCell]
     align: list[Alignment]
     rows: list[list[TableCell]]
+    row_lines: list[int | None] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class FinancialSection:
     title: str
     table: ParsedTable
+    line: int | None = None
     kind: Literal["financial"] = "financial"
 
 
@@ -163,6 +197,7 @@ class FinancialSection:
 class ProseSection:
     title: str
     html: str
+    line: int | None = None
     kind: Literal["prose"] = "prose"
 
 
@@ -193,6 +228,7 @@ class CalculatedRow:
     cells: list[CalculatedCell]
     amount: Decimal
     amount_source: AmountSource
+    source_line: int | None = None
 
 
 @dataclass(slots=True)
@@ -203,6 +239,7 @@ class CalculatedFinancialSection:
     rows: list[CalculatedRow]
     total: Decimal
     payable_amount_column: int
+    source_line: int | None = None
     kind: Literal["financial"] = "financial"
 
 
@@ -210,6 +247,7 @@ class CalculatedFinancialSection:
 class CalculatedProseSection:
     title: str
     html: str
+    source_line: int | None = None
     kind: Literal["prose"] = "prose"
 
 
@@ -238,7 +276,14 @@ class RenderOptions:
     output_path: Path
     for_pdf: bool = False
     accent_override: str | None = None
+    paper_override: str | None = None
+    ink_override: str | None = None
+    muted_override: str | None = None
+    rule_override: str | None = None
+    density_override: Density | None = None
     font_family_override: str | None = None
+    allow_outside_root: bool = False
+    deterministic: bool = False
 
 
 @dataclass(slots=True)

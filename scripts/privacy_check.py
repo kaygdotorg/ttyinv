@@ -1,51 +1,106 @@
+#!/usr/bin/env python3
+"""Fail when repository content resembles private invoice or credential data."""
+
 from __future__ import annotations
 
 import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED_DIRECTORIES = {".git", ".pytest_cache", ".venv", "__pycache__", "build", "dist", "htmlcov"}
-FORBIDDEN_DIRECTORIES = {"private", "reference", "real-invoices"}
-FORBIDDEN_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}
-ALLOWED_EMAIL_DOMAINS = {"example.com", "example.org", "example.net"}
-TEXT_SKIP = {"LICENSE"}
+ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
+SKIP_DIRS = {".git", ".venv", "venv", "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+SKIP_FILES = {"LICENSE"}
+FORBIDDEN_SUFFIXES = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".tif", ".tiff",
+    ".p12", ".pfx", ".jks", ".keystore", ".pem", ".key",
+}
+FONT_SUFFIXES = {".ttf", ".otf", ".woff", ".woff2"}
+TEXT_SUFFIXES = {
+    ".md", ".txt", ".toml", ".yaml", ".yml", ".json", ".py", ".css", ".html",
+    ".js", ".ts", ".tsx", ".jsx", ".svg", ".sh", ".ini", ".cfg", ".xml",
+}
 
-failures: list[str] = []
+PATTERNS = [
+    ("private-key", re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----")),
+    ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{30,}|github_pat_[A-Za-z0-9_]{40,})\b")),
+    ("slack-token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b")),
+    ("india-pan", re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b")),
+    ("india-gstin", re.compile(r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][A-Z0-9]Z[A-Z0-9]\b")),
+    ("iban", re.compile(r"\b[A-Z]{2}[0-9]{2}[A-Z0-9]{11,30}\b")),
+    ("non-example-email", re.compile(r"\b[A-Z0-9._%+-]+@(?!example\.(?:com|org|net)\b)[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)),
+]
 
-for path in ROOT.rglob("*"):
+
+def is_probable_card(value: str) -> bool:
+    digits = [int(character) for character in re.sub(r"[^0-9]", "", value)]
+    if not 13 <= len(digits) <= 19 or len(set(digits)) == 1:
+        return False
+    total = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
+def tracked_candidates(root: Path) -> list[Path]:
+    return sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and not any(part in SKIP_DIRS for part in path.relative_to(root).parts)
+    )
+
+
+def allow_vendored_font(path: Path) -> bool:
     relative = path.relative_to(ROOT)
-    if any(part in EXCLUDED_DIRECTORIES for part in relative.parts):
-        continue
-    if path.is_dir():
-        if path.name in FORBIDDEN_DIRECTORIES:
-            failures.append(f"{relative}: private/reference directory must not be included")
-        continue
-    if path.suffix.lower() in FORBIDDEN_EXTENSIONS:
-        failures.append(f"{relative}: raster images and PDFs are blocked by the privacy gate")
-        continue
-    if path.name in TEXT_SKIP or path.stat().st_size > 1_000_000:
-        continue
-    try:
-        contents = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        continue
+    return relative.parts[:3] == ("src", "ttyinv", "fonts") and (ROOT / "src/ttyinv/fonts/OFL.txt").exists()
 
-    if re.search(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", contents):
-        failures.append(f"{relative}: contains a private key")
-    if re.search(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", contents):
-        failures.append(f"{relative}: contains a PAN-like identifier")
-    if re.search(r"\b[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]\b", contents):
-        failures.append(f"{relative}: contains a GSTIN-like identifier")
-    for match in re.finditer(r"\b[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})\b", contents, re.I):
-        domain = match.group(1).lower()
-        if domain not in ALLOWED_EMAIL_DOMAINS:
-            failures.append(f"{relative}: contains a non-example email domain ({domain})")
 
-if failures:
-    print("Privacy check failed:", file=sys.stderr)
-    for failure in failures:
-        print(f"- {failure}", file=sys.stderr)
-    raise SystemExit(1)
+def main() -> int:
+    failures: list[str] = []
+    for path in tracked_candidates(ROOT):
+        relative = path.relative_to(ROOT)
+        name = path.name.casefold()
+        if path.name in SKIP_FILES:
+            continue
+        if name == ".env" or name.startswith(".env.") or name.startswith("id_rsa") or name.startswith("id_ed25519"):
+            failures.append(f"forbidden credential-shaped file: {relative}")
+            continue
+        suffix = path.suffix.casefold()
+        if suffix in FORBIDDEN_SUFFIXES:
+            failures.append(f"forbidden private/binary file type: {relative}")
+            continue
+        if suffix in FONT_SUFFIXES and not allow_vendored_font(path):
+            failures.append(f"unreviewed font binary: {relative}")
+            continue
+        if suffix not in TEXT_SUFFIXES and path.name not in {"Makefile", ".gitignore", ".gitleaks.toml"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for label, pattern in PATTERNS:
+            if match := pattern.search(text):
+                excerpt = match.group(0)
+                if label == "non-example-email" and relative.parts[:2] == (".github", "workflows"):
+                    continue
+                failures.append(f"{label} pattern in {relative}: {excerpt[:8]}…")
+        for match in re.finditer(r"(?<![A-Za-z0-9])(?:[0-9][ -]?){13,19}(?![A-Za-z0-9])", text):
+            if is_probable_card(match.group(0)):
+                failures.append(f"payment-card pattern in {relative}")
+                break
 
-print("privacy check passed")
+    if failures:
+        print("privacy check failed:", file=sys.stderr)
+        for failure in sorted(set(failures)):
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+    print("privacy check: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
