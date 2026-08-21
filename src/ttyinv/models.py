@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -83,6 +84,15 @@ class InvoiceMeta(StrictModel):
     currency: str
     locale: str = "en-GB"
 
+    @field_validator("issued", "due", mode="before")
+    @classmethod
+    def normalise_date_scalar(cls, value: object) -> object:
+        if value is None or isinstance(value, str):
+            return value
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
+
     @field_validator("currency")
     @classmethod
     def normalise_currency(cls, value: str) -> str:
@@ -134,6 +144,15 @@ class Settlement(StrictModel):
     date: str
     paid: MoneyValue
     received: MoneyValue | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def normalise_date_scalar(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
 
 
 class InvoiceFrontmatter(StrictModel):
