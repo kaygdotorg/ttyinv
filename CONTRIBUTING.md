@@ -2,6 +2,19 @@
 
 Thank you for helping improve a deliberately small invoice renderer.
 
+## Branch policy
+
+Development happens on `dev`. New work should branch from `dev` when a short-lived review branch is genuinely needed, and it must return to `dev` before release.
+
+`main` contains stable code only. Promote `dev` to `main` only after the complete test, privacy, and visual-contract gates pass and the release candidate has been inspected. Do not develop directly on `main`.
+
+The long-lived branch model is therefore:
+
+```text
+dev  -> all development and integration
+main -> stable/releasable code only
+```
+
 ## Product boundary
 
 `ttyinv` is a CLI that turns one strict Markdown invoice into self-contained HTML and/or A4 PDF. It is not an editor, web service, invoice database, tax adviser, payment processor, customer-management system, or exchange-rate service.
