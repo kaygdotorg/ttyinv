@@ -58,7 +58,7 @@ def test_single_financial_section_has_only_grand_total(tmp_path: Path) -> None:
 
 def test_section_titles_share_payment_alignment(tmp_path: Path) -> None:
     html = _render(tmp_path)
-    assert "[ Contract fees ]" in html
+    assert "[ Platform services ]" in html
     assert "[ Notes ]" in html
     assert "[ Payment Methods ]" in html
     assert "left: 4mm" in html
