@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .errors import TtyinvError
+from .security import resolve_local_path
 
 _SUPPORTED_MIME = {
     ".svg": "image/svg+xml",
@@ -41,7 +42,12 @@ def embed_asset_path(asset_path: Path) -> str:
     return data_url(contents, mime)
 
 
-def embed_local_asset(reference: str, source_directory: Path) -> str:
+def embed_local_asset(
+    reference: str,
+    source_directory: Path,
+    *,
+    allow_outside_root: bool = False,
+) -> str:
     if reference.startswith("data:"):
         return reference
     if is_external(reference):
@@ -49,7 +55,12 @@ def embed_local_asset(reference: str, source_directory: Path) -> str:
             f"Remote asset {reference!r} cannot be embedded. Use a local path so the HTML remains self-contained."
         )
 
-    asset_path = (source_directory / reference).resolve()
+    asset_path = resolve_local_path(
+        reference,
+        source_directory,
+        allow_outside_root=allow_outside_root,
+        purpose="asset",
+    )
     try:
         return embed_asset_path(asset_path)
     except TtyinvError as exc:

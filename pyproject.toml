@@ -24,7 +24,9 @@ classifiers = [
   "Topic :: Text Processing :: Markup",
 ]
 dependencies = [
+  "babel>=2.14,<3",
   "beautifulsoup4>=4.12,<5",
+  "click>=8.1,<9",
   "fonttools[woff]>=4.53,<5",
   "markdown-it-py>=3,<4",
   "playwright>=1.48,<2",

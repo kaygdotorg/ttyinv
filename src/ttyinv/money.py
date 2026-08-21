@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from decimal import Decimal, InvalidOperation
 
 from babel.numbers import format_currency, format_decimal
@@ -74,16 +75,10 @@ def _inspect_columns(section: FinancialSection, invoice_currency: str) -> Column
             f"Use 'Amount' or 'Amount ({invoice_currency})'."
         )
 
-    return ColumnInfo(
-        description=description,
-        quantity=quantity,
-        rate=rate,
-        payable_amount=payable_candidates[0],
-        currencies=currencies,
-    )
+    return ColumnInfo(description, quantity, rate, payable_candidates[0], currencies)
 
 
-def _parse_decimal(value: str, context: str) -> Decimal | None:
+def _parse_decimal(value: str, context: str, *, source_path: Path | None = None, source_line: int | None = None) -> Decimal | None:
     trimmed = value.strip()
     if not trimmed or trimmed.lower() == "auto":
         return None
@@ -93,7 +88,7 @@ def _parse_decimal(value: str, context: str) -> Decimal | None:
     try:
         return Decimal(normalised)
     except InvalidOperation as exc:
-        raise TtyinvError(f"Invalid numeric value {value!r} in {context}.") from exc
+        raise TtyinvError(f"Invalid numeric value {value!r} in {context}.", path=source_path, line=source_line) from exc
 
 
 def _babel_locale(locale: str) -> str:
@@ -102,146 +97,111 @@ def _babel_locale(locale: str) -> str:
 
 def display_money(amount: Decimal, currency: str, locale: str) -> str:
     try:
-        return format_currency(
-            amount,
-            currency,
-            locale=_babel_locale(locale),
-            currency_digits=True,
-            decimal_quantization=False,
-        )
+        return format_currency(amount, currency, locale=_babel_locale(locale), currency_digits=True, decimal_quantization=False)
     except Exception:
         return f"{currency} {amount.quantize(Decimal('0.01'))}"
 
 
+_ONES = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen", "Eighteen", "Nineteen"]
+_TENS = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+
+def _under_thousand(value: int) -> str:
+    parts: list[str] = []
+    if value >= 100:
+        parts.extend((_ONES[value // 100], "Hundred")); value %= 100
+    if value >= 20:
+        tens = _TENS[value // 10]; parts.append(f"{tens}-{_ONES[value % 10]}" if value % 10 else tens)
+    elif value:
+        parts.append(_ONES[value])
+    return " ".join(parts)
+
+
+def _western_integer_words(value: int) -> str:
+    if value == 0: return "Zero"
+    if value < 0: return "Minus " + _western_integer_words(-value)
+    parts: list[str] = []
+    for scale, label in ((1_000_000_000, "Billion"), (1_000_000, "Million"), (1_000, "Thousand")):
+        if value >= scale:
+            count, value = divmod(value, scale); parts.extend((_western_integer_words(count), label))
+    if value: parts.append(_under_thousand(value))
+    return " ".join(part for part in parts if part)
+
+
+def _indian_integer_words(value: int) -> str:
+    if value == 0: return "Zero"
+    if value < 0: return "Minus " + _indian_integer_words(-value)
+    parts: list[str] = []
+    for scale, label in ((10_000_000, "Crore"), (100_000, "Lakh"), (1_000, "Thousand")):
+        if value >= scale:
+            count, value = divmod(value, scale); parts.extend((_western_integer_words(count), label))
+    if value: parts.append(_under_thousand(value))
+    return " ".join(part for part in parts if part)
+
+
+def money_in_words(amount: Decimal, currency: str) -> str:
+    currency = currency.upper(); quantized = amount.quantize(Decimal("0.01")); sign = -1 if quantized < 0 else 1
+    absolute = abs(quantized); major = int(absolute); minor = int((absolute - Decimal(major)) * 100)
+    if currency == "EUR":
+        parts = [_western_integer_words(major), "Euro" if major == 1 else "Euros"]
+        if minor: parts.extend(("and", _western_integer_words(minor), "Cent" if minor == 1 else "Cents"))
+    elif currency == "INR":
+        parts = [_indian_integer_words(major), "Rupee" if major == 1 else "Rupees"]
+        if minor: parts.extend(("and", _western_integer_words(minor), "Paisa" if minor == 1 else "Paise"))
+    else:
+        parts = [_western_integer_words(major), currency]
+        if minor: parts.extend(("and", _western_integer_words(minor), "Hundredths"))
+    result = " ".join(parts) + " Only"
+    return "Minus " + result if sign < 0 else result
+
+
 def display_number(amount: Decimal, locale: str) -> str:
-    try:
-        return format_decimal(amount, locale=_babel_locale(locale), decimal_quantization=False)
-    except Exception:
-        return format(amount, "f")
+    try: return format_decimal(amount, locale=_babel_locale(locale), decimal_quantization=False)
+    except Exception: return format(amount, "f")
 
 
-def _calculate_section(
-    section: FinancialSection,
-    invoice_currency: str,
-    locale: str,
-    policy: AmountPolicy,
-) -> CalculatedFinancialSection:
-    columns = _inspect_columns(section, invoice_currency)
-    total = Decimal("0")
-    rows: list[CalculatedRow] = []
-
+def _calculate_section(section: FinancialSection, invoice_currency: str, locale: str, policy: AmountPolicy, source_path: Path) -> CalculatedFinancialSection:
+    columns = _inspect_columns(section, invoice_currency); total = Decimal("0"); rows: list[CalculatedRow] = []
     for row_index, row in enumerate(section.table.rows, start=1):
+        source_line = section.table.row_lines[row_index - 1] if row_index - 1 < len(section.table.row_lines) else section.line
         description = row[columns.description].source if columns.description is not None else ""
         if description.strip().lower() == "total":
-            raise TtyinvError(
-                f"Section {section.title!r}, row {row_index}: do not write a TOTAL row; ttyinv generates it."
-            )
-
-        quantity = (
-            _parse_decimal(row[columns.quantity].source, f"{section.title}, row {row_index}, quantity")
-            if columns.quantity is not None
-            else None
-        )
-        rate = (
-            _parse_decimal(row[columns.rate].source, f"{section.title}, row {row_index}, rate")
-            if columns.rate is not None
-            else None
-        )
-        explicit = _parse_decimal(
-            row[columns.payable_amount].source,
-            f"{section.title}, row {row_index}, amount",
-        )
+            raise TtyinvError(f"Section {section.title!r}, row {row_index}: do not write a TOTAL row; ttyinv generates it.", path=source_path, line=source_line)
+        quantity = _parse_decimal(row[columns.quantity].source, f"{section.title}, row {row_index}, quantity", source_path=source_path, source_line=source_line) if columns.quantity is not None else None
+        rate = _parse_decimal(row[columns.rate].source, f"{section.title}, row {row_index}, rate", source_path=source_path, source_line=source_line) if columns.rate is not None else None
+        explicit = _parse_decimal(row[columns.payable_amount].source, f"{section.title}, row {row_index}, amount", source_path=source_path, source_line=source_line)
         computed = quantity * rate if quantity is not None and rate is not None else None
-
-        if policy.recalculate and computed is not None:
-            amount = computed
-            amount_source = "calculated"
-        elif explicit is None and computed is not None:
-            amount = computed
-            amount_source = "calculated"
+        if policy.recalculate and computed is not None: amount, amount_source = computed, "calculated"
+        elif explicit is None and computed is not None: amount, amount_source = computed, "calculated"
         elif explicit is not None and computed is not None:
-            matches = abs(explicit - computed) <= Decimal("0.005")
-            if matches:
-                amount = explicit
-                amount_source = "explicit"
-            elif policy.trust_explicit:
-                amount = explicit
-                amount_source = "trusted-explicit"
-            else:
-                raise TtyinvError(
-                    f"{section.title}, row {row_index}: explicit amount {explicit} does not match "
-                    f"quantity x rate ({computed}). Use --trust-explicit to keep the written amount "
-                    "or --recalculate to replace it."
-                )
-        elif explicit is not None:
-            amount = explicit
-            amount_source = "explicit"
-        else:
-            raise TtyinvError(
-                f"{section.title}, row {row_index}: Amount is blank, but no calculable quantity and rate were found."
-            )
-
-        total += amount
-        cells: list[CalculatedCell] = []
+            if abs(explicit - computed) <= Decimal("0.005"): amount, amount_source = explicit, "explicit"
+            elif policy.trust_explicit: amount, amount_source = explicit, "trusted-explicit"
+            else: raise TtyinvError(f"{section.title}, row {row_index}: explicit amount {explicit} does not match quantity x rate ({computed}). Use --trust-explicit to keep the written amount or --recalculate to replace it.", path=source_path, line=source_line)
+        elif explicit is not None: amount, amount_source = explicit, "explicit"
+        else: raise TtyinvError(f"{section.title}, row {row_index}: Amount is blank, but no calculable quantity and rate were found.", path=source_path, line=source_line)
+        total += amount; cells: list[CalculatedCell] = []
         for cell_index, cell in enumerate(row):
             if cell_index == columns.payable_amount:
-                rendered = display_money(amount, invoice_currency, locale)
-                cells.append(CalculatedCell(html=rendered, plain=rendered, numeric=True))
-                continue
+                rendered = display_money(amount, invoice_currency, locale); cells.append(CalculatedCell(rendered, rendered, True)); continue
             if cell_index == columns.quantity and quantity is not None:
-                rendered = display_number(quantity, locale)
-                cells.append(CalculatedCell(html=rendered, plain=rendered, numeric=True))
-                continue
+                rendered = display_number(quantity, locale); cells.append(CalculatedCell(rendered, rendered, True)); continue
             if cell_index == columns.rate and rate is not None:
-                rendered = display_money(rate, invoice_currency, locale)
-                cells.append(CalculatedCell(html=rendered, plain=rendered, numeric=True))
-                continue
+                rendered = display_money(rate, invoice_currency, locale); cells.append(CalculatedCell(rendered, rendered, True)); continue
             column_currency = columns.currencies.get(cell_index)
             if column_currency:
-                numeric = _parse_decimal(
-                    cell.source,
-                    f"{section.title}, row {row_index}, {section.table.headers[cell_index].source}",
-                )
+                numeric = _parse_decimal(cell.source, f"{section.title}, row {row_index}, {section.table.headers[cell_index].source}", source_path=source_path, source_line=source_line)
                 if numeric is not None:
-                    rendered = display_money(numeric, column_currency, locale)
-                    cells.append(CalculatedCell(html=rendered, plain=rendered, numeric=True))
-                    continue
-            cells.append(CalculatedCell(html=cell.html, plain=cell.source, numeric=False))
-
-        rows.append(CalculatedRow(cells=cells, amount=amount, amount_source=amount_source))
-
-    return CalculatedFinancialSection(
-        title=section.title,
-        headers=[header.html for header in section.table.headers],
-        align=section.table.align,
-        rows=rows,
-        total=total,
-        payable_amount_column=columns.payable_amount,
-    )
+                    rendered = display_money(numeric, column_currency, locale); cells.append(CalculatedCell(rendered, rendered, True)); continue
+            cells.append(CalculatedCell(cell.html, cell.source, False))
+        rows.append(CalculatedRow(cells, amount, amount_source, source_line))
+    return CalculatedFinancialSection(section.title, [h.html for h in section.table.headers], section.table.align, rows, total, columns.payable_amount, section.line)
 
 
 def calculate_invoice(invoice: ParsedInvoice, policy: AmountPolicy) -> CalculatedInvoice:
-    if policy.trust_explicit and policy.recalculate:
-        raise TtyinvError("--trust-explicit and --recalculate cannot be used together.")
-
-    currency = invoice.frontmatter.invoice.currency
-    locale = invoice.frontmatter.invoice.locale
-    sections: list[CalculatedFinancialSection | CalculatedProseSection] = []
-    grand_total = Decimal("0")
-
+    if policy.trust_explicit and policy.recalculate: raise TtyinvError("--trust-explicit and --recalculate cannot be used together.")
+    currency = invoice.frontmatter.invoice.currency; locale = invoice.frontmatter.invoice.locale; sections = []; grand_total = Decimal("0")
     for section in invoice.sections:
         if section.kind == "prose":
-            sections.append(CalculatedProseSection(title=section.title, html=section.html))
-            continue
-        calculated = _calculate_section(section, currency, locale, policy)
-        sections.append(calculated)
-        grand_total += calculated.total
-
-    return CalculatedInvoice(
-        source_path=invoice.source_path,
-        source_directory=invoice.source_directory,
-        frontmatter=invoice.frontmatter,
-        preamble_html=invoice.preamble_html,
-        sections=sections,
-        grand_total=grand_total,
-    )
+            sections.append(CalculatedProseSection(section.title, section.html, section.line)); continue
+        calculated = _calculate_section(section, currency, locale, policy, invoice.source_path); sections.append(calculated); grand_total += calculated.total
+    return CalculatedInvoice(invoice.source_path, invoice.source_directory, invoice.frontmatter, invoice.preamble_html, sections, grand_total)

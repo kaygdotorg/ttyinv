@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 import yaml
 
 from .diagnostics import Diagnostic
+from .errors import TtyinvError
 
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 _MARKDOWN_LINK_RE = re.compile(r"(?P<image>!)?\[(?P<label>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
@@ -50,7 +51,6 @@ def resolve_local_reference(raw: str, *, root: Path, allow_outside_root: bool) -
         return None, None
     if parsed.scheme and parsed.scheme.lower() != "file":
         return None, f"unsupported link scheme {parsed.scheme!r}"
-
     if parsed.scheme.lower() == "file":
         candidate = Path(unquote(parsed.path)).expanduser()
     else:
@@ -58,16 +58,38 @@ def resolve_local_reference(raw: str, *, root: Path, allow_outside_root: bool) -
         candidate = Path(unquote(without_fragment)).expanduser()
         if not candidate.is_absolute():
             candidate = root / candidate
-
     try:
         resolved = candidate.resolve(strict=False)
         resolved_root = root.resolve(strict=True)
     except OSError as exc:
         return None, f"could not resolve path: {exc}"
-
     if not allow_outside_root and not _inside(resolved, resolved_root):
         return resolved, "path escapes the invoice directory"
     return resolved, None
+
+
+def resolve_local_path(
+    reference: str,
+    source_directory: Path,
+    *,
+    allow_outside_root: bool = False,
+    purpose: str = "local file",
+) -> Path:
+    """Renderer-facing strict path resolver using the same sandbox as linting."""
+    resolved, error = resolve_local_reference(
+        reference,
+        root=source_directory.resolve(),
+        allow_outside_root=allow_outside_root,
+    )
+    if error:
+        raise TtyinvError(
+            f"{purpose.capitalize()} {reference!r}: {error}.",
+            hint="Move the file under the invoice directory or pass --allow-outside-root explicitly.",
+            code="path-outside-root",
+        )
+    if resolved is None:
+        raise TtyinvError(f"{purpose.capitalize()} {reference!r} is not a local path.")
+    return resolved
 
 
 def _walk_yaml_paths(value: Any) -> Iterable[str]:
@@ -101,14 +123,11 @@ def scan_local_references(source_path: Path, source: str) -> list[LocalReference
             offset = source.find(raw, frontmatter_match.start("yaml"))
             line, column = _line_column(source, max(offset, 0))
             references.append(LocalReference(raw, Path(raw), line, column, True, "asset"))
-
     body_start = frontmatter_match.end() if frontmatter_match else 0
     for match in _MARKDOWN_LINK_RE.finditer(source, body_start):
         raw = match.group("target")
         line, column = _line_column(source, match.start("target"))
-        references.append(
-            LocalReference(raw, Path(raw), line, column, bool(match.group("image")), match.group("label"))
-        )
+        references.append(LocalReference(raw, Path(raw), line, column, bool(match.group("image")), match.group("label")))
     return references
 
 
@@ -124,41 +143,12 @@ def validate_local_references(
     for reference in scan_local_references(source_path, source):
         resolved, error = resolve_local_reference(reference.raw, root=root, allow_outside_root=allow_outside_root)
         if error:
-            diagnostics.append(
-                Diagnostic(
-                    severity="error",
-                    code="PATH001",
-                    message=f"{reference.raw!r}: {error}",
-                    path=str(source_path),
-                    line=reference.line,
-                    column=reference.column,
-                    hint="Move the file below the invoice directory or pass --allow-outside-root deliberately.",
-                )
-            )
+            diagnostics.append(Diagnostic("error", "PATH001", f"{reference.raw!r}: {error}", str(source_path), reference.line, reference.column, "Move the file below the invoice directory or pass --allow-outside-root deliberately."))
             continue
         if resolved is None:
             continue
         if not resolved.exists() and (reference.is_image or require_link_targets):
-            diagnostics.append(
-                Diagnostic(
-                    severity="error" if reference.is_image else "warning",
-                    code="PATH002",
-                    message=f"local {'asset' if reference.is_image else 'link target'} does not exist: {reference.raw}",
-                    path=str(source_path),
-                    line=reference.line,
-                    column=reference.column,
-                )
-            )
+            diagnostics.append(Diagnostic("error" if reference.is_image else "warning", "PATH002", f"local {'asset' if reference.is_image else 'link target'} does not exist: {reference.raw}", str(source_path), reference.line, reference.column))
         if reference.is_image and not reference.label.strip():
-            diagnostics.append(
-                Diagnostic(
-                    severity="warning",
-                    code="A11Y001",
-                    message="Markdown image has empty alternative text",
-                    path=str(source_path),
-                    line=reference.line,
-                    column=reference.column,
-                    hint="Describe meaningful images, or keep alt text empty only when the image is decorative.",
-                )
-            )
+            diagnostics.append(Diagnostic("warning", "A11Y001", "Markdown image has empty alternative text", str(source_path), reference.line, reference.column, "Describe meaningful images, or keep alt text empty only when the image is decorative."))
     return diagnostics

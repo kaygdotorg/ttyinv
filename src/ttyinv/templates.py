@@ -1,51 +1,49 @@
-"""Fully fabricated starter invoice used by ``ttyinv init``."""
+from __future__ import annotations
 
 STARTER_INVOICE = """---
 schema: ttyinv/v1
 invoice:
   number: INV-2026-001
-  title: Consulting services
-  issued: 2026-01-15
-  due: 2026-01-29
+  title: Invoice
+  issued: 20 Aug 2026
+  due: 3 Sep 2026
+  terms: Net 14
   currency: EUR
   locale: en-GB
-
 from:
-  name: Northstar Studio
+  name: Example Studio
   address:
     - 10 Example Street
     - Paris
     - France
   identifiers:
     VAT: FR00000000000
-  email: billing@example.com
-
 to:
-  name: Acme Research Ltd
+  name: Example Client
   address:
     - 20 Sample Road
     - Berlin
     - Germany
   identifiers:
     VAT: DE000000000
-
 payment:
-  title: Payment
+  title: Payment Methods
   methods:
     - title: Bank transfer
       fields:
-        Beneficiary: Northstar Studio
-        Reference: INV-2026-001
-        Instructions: Contact billing@example.com for transfer details
+        Beneficiary: Example Studio
+        IBAN: DE00 0000 0000 0000 0000 00
+        BIC: EXAMPLE0XXX
+        Bank: Example Bank
 ---
 
 ## Contract fees
 
 | Description | Days | Rate | Amount (EUR) |
-| --- | ---: | ---: | ---: |
-| Systems consulting<br>1 Jan 2026 to 15 Jan 2026 | 8 | 650.00 | auto |
+| :--- | ---: | ---: | ---: |
+| Systems consulting<br>August 2026 | 20 | 250.00 | auto |
 
 ## Notes
 
-Payment is due within fourteen days. See the [project summary](https://example.com/project).
+Payment is due within fourteen days.
 """
