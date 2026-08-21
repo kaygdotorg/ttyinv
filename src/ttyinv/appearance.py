@@ -8,9 +8,12 @@ from dataclasses import dataclass
 
 from .diagnostics import Diagnostic
 
+# These defaults intentionally mirror the calibrated renderer.  The hardening
+# layer must never silently recolor a document after the visual renderer has
+# produced it.
 _DEFAULTS = {
-    "light": {"paper": "#ffffff", "ink": "#161618", "muted": "#68686f", "accent": "#50a6ed"},
-    "dark": {"paper": "#161618", "ink": "#f1f1f2", "muted": "#9b9ba2", "accent": "#50a6ed"},
+    "light": {"paper": "#ffffff", "ink": "#141416", "muted": "#5d5d63", "accent": "#126aa8"},
+    "dark": {"paper": "#121214", "ink": "#f2f2f3", "muted": "#aaaaaf", "accent": "#58a9e8"},
 }
 _NAMED = {
     "black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0),
@@ -39,7 +42,7 @@ def validate_css_color(value: str) -> str:
         raise ValueError("unsafe CSS color expression")
     if _SAFE_HEX.fullmatch(candidate) or _SAFE_NAME.fullmatch(candidate) or _SAFE_FUNCTION.fullmatch(candidate):
         return candidate
-    raise ValueError("expected a CSS color such as #50a6ed, rebeccapurple, rgb(...), hsl(...), or oklch(...)")
+    raise ValueError("expected a CSS color such as #126aa8, rebeccapurple, rgb(...), hsl(...), or oklch(...)")
 
 
 def resolve_palette(
