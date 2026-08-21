@@ -31,6 +31,7 @@ def test_section_labels_share_payment_alignment(tmp_path: Path) -> None:
 
     assert '[ Contract fees ]' in result.html
     assert '[ Notes ]' in result.html
-    assert '[ Payment ]' in result.html
+    assert '[ Payment Methods ]' in result.html
     assert ".section-heading" in result.html
     assert "left: 4mm" in result.html
+    assert "translateY(-50%)" in result.html
