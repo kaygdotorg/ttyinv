@@ -24,8 +24,9 @@ def test_init_writes_only_fabricated_starter_data(tmp_path: Path) -> None:
     invoice = tmp_path / "invoice.md"
     assert main(["init", str(invoice)]) == 0
     content = invoice.read_text(encoding="utf-8")
-    assert "Northstar Studio" in content
-    assert "example.com" in content
+    assert "Example Studio" in content
+    assert "Example Client" in content
+    assert "Example Bank" in content
     assert "ttyinv/v1" in content
 
 
