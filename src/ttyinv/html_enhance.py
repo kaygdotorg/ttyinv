@@ -32,37 +32,29 @@ def _classes(tag: Tag) -> str:
 
 
 def _ensure_frame(soup: BeautifulSoup) -> None:
-    frame_like = []
-    for tag in soup.find_all(True):
-        if not isinstance(tag, Tag):
-            continue
-        classes = _classes(tag).casefold()
-        if "frame" not in classes:
-            continue
-        frame_like.append(tag)
-        if "corner" in classes or "junction" in classes:
-            vertical = "top" if "top" in classes else "bottom" if "bottom" in classes else ""
-            horizontal = "left" if "left" in classes else "right" if "right" in classes else ""
-            tag["data-ttyinv-frame-corner"] = f"{vertical}-{horizontal}".strip("-")
-        else:
-            side = next((word for word in ("top", "right", "bottom", "left") if word in classes), "")
-            tag["data-ttyinv-frame-line"] = side
-    if frame_like or not isinstance(soup.body, Tag):
+    """Keep one frame model: a dashed rectangle plus four literal `+` glyphs.
+
+    The visual renderer normally emits this structure already.  The fallback is
+    only for older/self-authored HTML; hardening must never introduce a second,
+    vector-junction frame that can drift from the calibrated renderer.
+    """
+
+    if isinstance(soup.select_one(".page-frame"), Tag):
         return
+    if not isinstance(soup.body, Tag):
+        return
+
     frame = soup.new_tag("div")
-    frame["class"] = ["ttyinv-page-frame"]
+    frame["class"] = ["page-frame"]
     frame["aria-hidden"] = "true"
-    for side in ("top", "right", "bottom", "left"):
-        line = soup.new_tag("span")
-        line["class"] = ["ttyinv-frame-line", f"ttyinv-frame-{side}"]
-        line["data-ttyinv-frame-line"] = side
-        frame.append(line)
-    for corner in ("top-left", "top-right", "bottom-right", "bottom-left"):
-        junction = soup.new_tag("span")
-        junction["class"] = ["ttyinv-frame-corner", f"ttyinv-frame-{corner}"]
-        junction["data-ttyinv-frame-corner"] = corner
-        frame.append(junction)
     soup.body.insert(0, frame)
+
+    for name in ("tl", "tr", "bl", "br"):
+        corner = soup.new_tag("span")
+        corner["class"] = ["frame-corner", name]
+        corner["aria-hidden"] = "true"
+        corner.string = "+"
+        frame.insert_after(corner)
 
 
 def _heading(table: Tag) -> str:
@@ -149,10 +141,14 @@ def _font_digest(html: str) -> str | None:
 
 
 def _css(options: EnhanceOptions) -> str:
-    scale, leading = (("1", "1") if options.density == "comfortable" else (".91", ".94"))
+    # Comfortable is the calibrated renderer and therefore gets *no* typography
+    # override here. Compact is opt-in and may reduce density explicitly.
+    compact_css = ""
+    if options.density == "compact":
+        compact_css = "body{font-size:7.65pt;line-height:1.37;}"
     return f"""
-:root {{ --paper:{options.palette.paper}!important; --ink:{options.palette.ink}!important; --muted:{options.palette.muted}!important; --accent:{options.palette.accent}!important; --ttyinv-density-scale:{scale}; --ttyinv-leading-scale:{leading}; }}
-body,.invoice,.invoice-page,.invoice-document {{ font-size:calc(1em * var(--ttyinv-density-scale)); line-height:calc(1.45 * var(--ttyinv-leading-scale)); }}
+:root {{ --paper:{options.palette.paper}!important; --ink:{options.palette.ink}!important; --muted:{options.palette.muted}!important; --accent:{options.palette.accent}!important; }}
+{compact_css}
 .ttyinv-sr-only {{ position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important; }}
 table {{ border-collapse:collapse;table-layout:fixed; }}
 table,thead,tbody,tfoot,tr,th,td {{ border-left:0!important;border-right:0!important; }}
@@ -163,17 +159,7 @@ section>h2,.section-label,.section-heading,.invoice-section-title {{ break-after
 .invoice-section table,.financial-section table {{ break-before:avoid-page;page-break-before:avoid; }}
 .totals,.grand-total,.total-due,.payment-section,.signature,.invoice-closing {{ break-inside:avoid-page;page-break-inside:avoid; }}
 a {{ color:var(--accent);text-decoration-thickness:.08em;text-underline-offset:.18em; }}
-.ttyinv-page-frame {{ position:absolute;inset:0;pointer-events:none;z-index:20; }}
-.ttyinv-frame-line {{ position:absolute;display:block;opacity:.9; }}
-.ttyinv-frame-top,.ttyinv-frame-bottom {{ left:18mm;right:18mm;height:.22mm;background:repeating-linear-gradient(to right,var(--muted) 0 1.2mm,transparent 1.2mm 3mm); }}
-.ttyinv-frame-left,.ttyinv-frame-right {{ top:18mm;bottom:18mm;width:.22mm;background:repeating-linear-gradient(to bottom,var(--muted) 0 1.2mm,transparent 1.2mm 3mm); }}
-.ttyinv-frame-top{{top:16mm}}.ttyinv-frame-bottom{{bottom:16mm}}.ttyinv-frame-left{{left:16mm}}.ttyinv-frame-right{{right:16mm}}
-.ttyinv-frame-corner {{ position:absolute;width:4mm;height:4mm;display:block; }}
-.ttyinv-frame-corner::before,.ttyinv-frame-corner::after {{ content:"";position:absolute;display:block;background:var(--muted); }}
-.ttyinv-frame-corner::before {{ left:0;right:0;top:calc(50% - .11mm);height:.22mm; }}
-.ttyinv-frame-corner::after {{ top:0;bottom:0;left:calc(50% - .11mm);width:.22mm; }}
-.ttyinv-frame-top-left{{left:14mm;top:14mm}}.ttyinv-frame-top-right{{right:14mm;top:14mm}}.ttyinv-frame-bottom-right{{right:14mm;bottom:14mm}}.ttyinv-frame-bottom-left{{left:14mm;bottom:14mm}}
-@media print {{ html,body{{background:var(--paper)!important;print-color-adjust:exact;-webkit-print-color-adjust:exact}} thead{{display:table-header-group!important}}tfoot{{display:table-footer-group!important}}.ttyinv-page-frame{{position:fixed}} }}
+@media print {{ html,body{{background:var(--paper)!important;print-color-adjust:exact;-webkit-print-color-adjust:exact}} thead{{display:table-header-group!important}}tfoot{{display:table-footer-group!important}} }}
 """.strip()
 
 
