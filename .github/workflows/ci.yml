@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints-release.txt -e '.[dev]'
+      - name: Compile
+        run: python -m compileall -q src tests scripts
+      - name: Test
+        run: python -m pytest --cov=ttyinv --cov-report=term-missing
+      - name: Privacy gate
+        run: python scripts/privacy_check.py .
+      - name: Lint fabricated gallery
+        shell: bash
+        run: |
+          while IFS= read -r -d '' invoice; do
+            python -m ttyinv lint "$invoice"
+          done < <(find examples -name '*.md' -print0)
+      - name: Verify generated schema
+        run: |
+          python -m ttyinv schema --output /tmp/ttyinv-v1.schema.json
+          diff -u schema/ttyinv-v1.schema.json /tmp/ttyinv-v1.schema.json
+      - name: Build distributions
+        run: python -m build
+
+  visual-contract:
+    name: Visual contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -c constraints-release.txt -e '.[dev]'
+          python -m playwright install --with-deps chromium
+      - name: Vendor Geist Mono for canonical metrics
+        run: python scripts/vendor_geist_mono.py
+      - name: Render fabricated visual fixtures
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          while IFS='|' read -r case_name source_file density expected_pages stress_flag; do
+            for theme_name in light dark; do
+              python -m ttyinv render "$source_file" --format both \
+                --theme "$theme_name" --density "$density" --deterministic \
+                --output "artifacts/$case_name-$theme_name"
+            done
+          done <<'CASES'
+          normal|examples/reference.md|comfortable|1|
+          compact|examples/reference.md|compact|1|
+          multi-section|examples/gallery/expenses.md|comfortable|2|
+          long-row|examples/gallery/long-row.md|comfortable|1|
+          multi-page|examples/gallery/multi-page.md|comfortable|3|stress
+          CASES
+      - name: Assert HTML and PDF geometry
+        shell: bash
+        run: |
+          contract_status=0
+          while IFS='|' read -r case_name source_file density expected_pages stress_flag; do
+            for theme_name in light dark; do
+              python scripts/visual_contract.py "artifacts/$case_name-$theme_name.html" \
+                --screenshot "artifacts/$case_name-$theme_name.png" \
+                --report "artifacts/$case_name-$theme_name-html.json" || contract_status=1
+            done
+            stress_args=()
+            if [[ "$stress_flag" == stress ]]; then stress_args+=(--stress); fi
+            python scripts/pdf_visual_contract.py \
+              "artifacts/$case_name-light.pdf" "artifacts/$case_name-dark.pdf" \
+              --case "$case_name" --expected-pages "$expected_pages" \
+              --baseline tests/fixtures/visual_geometry.json \
+              --report "artifacts/$case_name-pdf.json" "${stress_args[@]}" || contract_status=1
+          done <<'CASES'
+          normal|examples/reference.md|comfortable|1|
+          compact|examples/reference.md|compact|1|
+          multi-section|examples/gallery/expenses.md|comfortable|2|
+          long-row|examples/gallery/long-row.md|comfortable|1|
+          multi-page|examples/gallery/multi-page.md|comfortable|3|stress
+          CASES
+          exit "$contract_status"
+      - name: Check bundled font metrics
+        shell: bash
+        run: |
+          while IFS= read -r -d '' font; do
+            python scripts/font_metrics_check.py "$font" --json \
+              --baseline tests/fixtures/font_metrics.json
+          done < <(find src/ttyinv/fonts -type f -name 'GeistMono-*.woff2' -print0)
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: visual-contract
+          path: artifacts/
+          if-no-files-found: error
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,17 @@
+title = "ttyinv secret-scanning policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Only known fabricated documentation values are allowed."
+paths = [
+  '''^LICENSE$''',
+  '''(^|/)(?:\.venv|artifacts|dist|build)(/|$)''',
+]
+regexes = [
+  '''FR0{11}''',
+  '''DE0{9}''',
+  '''billing@example\.com''',
+  '''example\.com''',
+]

@@ -1,0 +1,2 @@
+# Release builds pin Playwright because each release maps to a specific Chromium revision.
+playwright==1.54.0
