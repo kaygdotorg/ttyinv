@@ -32,6 +32,14 @@ Run the browser-backed geometry check before changing renderer HTML, CSS, pagina
 make visual
 ```
 
+Continuous integration runs the unit tests on Python 3.11, 3.12, and 3.13 only. Run every other gate on your machine before you push:
+
+```console
+make preflight
+```
+
+`make preflight` runs `make check`, `make secrets`, and `make visual`. `make secrets` scans the whole git history with Gitleaks and needs Podman or Docker. Use `make secrets CONTAINER=docker` for Docker.
+
 ## Pull requests
 
 Keep changes focused and include tests. Renderer changes should explain which geometric relationship is being preserved or intentionally changed. The visual contract is relational: all page-frame junctions share axes with their rules; table headers, body cells, and totals share a column grid; section labels share one left inset; and light/dark themes share the same geometry.
