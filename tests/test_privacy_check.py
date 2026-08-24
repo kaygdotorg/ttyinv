@@ -38,3 +38,12 @@ def test_privacy_check_rejects_replaced_screenshot(tmp_path: Path, capsys) -> No
         f"unreviewed binary {asset}: SHA-256 does not match the reviewed asset"
         in capsys.readouterr().err
     )
+
+
+def test_privacy_check_skips_generated_artifacts(tmp_path: Path, capsys) -> None:
+    artifact = tmp_path / "artifacts" / "invoice.pdf"
+    artifact.parent.mkdir()
+    artifact.write_bytes(b"generated")
+
+    assert main([str(tmp_path)]) == 0
+    assert "privacy check: ok" in capsys.readouterr().out

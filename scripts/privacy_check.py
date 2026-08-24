@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Iterable
 
 SKIP_DIRS = {
-    ".git", ".next", ".venv", "venv", "build", "data", "dist", "node_modules",
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".git", ".next", ".venv", "venv", "artifacts", "build", "data", "dist",
+    "node_modules", "release", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache",
 }
 SKIP_FILES = {"LICENSE"}
 FORBIDDEN_SUFFIXES = {

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ttyinv"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Render strict Markdown invoices as terminal-inspired self-contained HTML and A4 PDF."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +50,9 @@ ttyinv = "ttyinv.cli_v2:main"
 Homepage = "https://github.com/kaygdotorg/ttyinv"
 Repository = "https://github.com/kaygdotorg/ttyinv"
 Issues = "https://github.com/kaygdotorg/ttyinv/issues"
+
+[tool.hatch.version]
+path = "src/ttyinv/__init__.py"
 
 [tool.hatch.build]
 artifacts = [

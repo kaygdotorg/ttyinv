@@ -4,7 +4,7 @@ Releases are built from tags by GitHub Actions. The workflow vendors the canonic
 
 ## Before tagging
 
-1. Confirm the version in `pyproject.toml` and `src/ttyinv/__init__.py`.
+1. Confirm the version in `src/ttyinv/__init__.py`. Hatch reads package metadata from that file.
 2. Run:
 
    ```console
@@ -23,8 +23,8 @@ Releases are built from tags by GitHub Actions. The workflow vendors the canonic
 Create an annotated tag matching the package version:
 
 ```console
-git tag -s v0.2.0 -m "ttyinv 0.2.0"
-git push origin v0.2.0
+git tag -s v0.1.0 -m "ttyinv 0.1.0"
+git push origin v0.1.0
 ```
 
 The release workflow creates:
