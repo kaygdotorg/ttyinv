@@ -2,6 +2,140 @@ use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 
 mod model;
+mod scalar_edit;
+
+pub use scalar_edit::{
+    SCALAR_EDIT_LIMITS, ScalarEditLimits, ScalarEditOutcome, ScalarEditRequest, ScalarEditResponse,
+    apply_scalar,
+};
+
+/// Return the deterministic SHA-256 digest of the exact source bytes.
+pub fn revision(source: &str) -> String {
+    let mut state = Sha256::new();
+    state.update(source.as_bytes());
+    state.finish_hex()
+}
+
+struct Sha256 {
+    state: [u32; 8],
+    block: [u8; 64],
+    block_len: usize,
+    bit_len: u64,
+}
+
+impl Sha256 {
+    fn new() -> Self {
+        Self {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ],
+            block: [0; 64],
+            block_len: 0,
+            bit_len: 0,
+        }
+    }
+
+    fn update(&mut self, input: &[u8]) {
+        for byte in input {
+            self.block[self.block_len] = *byte;
+            self.block_len += 1;
+            self.bit_len = self.bit_len.wrapping_add(8);
+            if self.block_len == self.block.len() {
+                self.compress();
+                self.block_len = 0;
+            }
+        }
+    }
+
+    fn finish_hex(mut self) -> String {
+        self.block[self.block_len] = 0x80;
+        self.block_len += 1;
+        if self.block_len > 56 {
+            self.block[self.block_len..].fill(0);
+            self.compress();
+            self.block_len = 0;
+        }
+        self.block[self.block_len..56].fill(0);
+        self.block[56..].copy_from_slice(&self.bit_len.to_be_bytes());
+        self.compress();
+        let mut output = String::with_capacity(64);
+        for word in self.state {
+            use std::fmt::Write as _;
+            let _ = write!(output, "{word:08x}");
+        }
+        output
+    }
+
+    fn compress(&mut self) {
+        const K: [u32; 64] = [
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+            0xc67178f2,
+        ];
+        let mut words = [0u32; 64];
+        for (index, chunk) in self.block.chunks_exact(4).take(16).enumerate() {
+            let Some(word) = chunk
+                .get(0..4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(u32::from_be_bytes)
+            else {
+                return;
+            };
+            words[index] = word;
+        }
+        for index in 16..64 {
+            let s0 = words[index - 15].rotate_right(7)
+                ^ words[index - 15].rotate_right(18)
+                ^ (words[index - 15] >> 3);
+            let s1 = words[index - 2].rotate_right(17)
+                ^ words[index - 2].rotate_right(19)
+                ^ (words[index - 2] >> 10);
+            words[index] = words[index - 16]
+                .wrapping_add(s0)
+                .wrapping_add(words[index - 7])
+                .wrapping_add(s1);
+        }
+        let mut working = self.state;
+        for index in 0..64 {
+            let s1 = working[4].rotate_right(6)
+                ^ working[4].rotate_right(11)
+                ^ working[4].rotate_right(25);
+            let choice = (working[4] & working[5]) ^ ((!working[4]) & working[6]);
+            let temp1 = working[7]
+                .wrapping_add(s1)
+                .wrapping_add(choice)
+                .wrapping_add(K[index])
+                .wrapping_add(words[index]);
+            let s0 = working[0].rotate_right(2)
+                ^ working[0].rotate_right(13)
+                ^ working[0].rotate_right(22);
+            let majority =
+                (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2]);
+            let temp2 = s0.wrapping_add(majority);
+            working = [
+                temp1.wrapping_add(temp2),
+                working[0],
+                working[1],
+                working[2],
+                working[3].wrapping_add(temp1),
+                working[4],
+                working[5],
+                working[6],
+            ];
+        }
+        for (state, value) in self.state.iter_mut().zip(working) {
+            *state = state.wrapping_add(value);
+        }
+    }
+}
 
 use model::*;
 pub use model::{Money, SourcePosition, SourceSpan};
@@ -207,13 +341,12 @@ pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 
 /// The authoritative invoice schema.
 pub const SCHEMA_JSON: &str = include_str!("../../../schema/ttyinv-v1.schema.json");
-
 /// Return the authoritative invoice schema.
 pub fn schema_json() -> &'static str {
     SCHEMA_JSON
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ValidationReport {
     diagnostics: Vec<Diagnostic>,
 }
@@ -785,6 +918,7 @@ fn parse_markdown(body: &str, first_line: usize) -> ParsedMarkdown {
                 codes::HTML001,
                 "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
             ),
+
             last_event_location,
         ));
     }
@@ -794,6 +928,65 @@ fn parse_markdown(body: &str, first_line: usize) -> ParsedMarkdown {
         diagnostics,
         width_issues,
         first_body_location: first_body_location(&line_index, body, first_line),
+    }
+}
+/// Count source structures without requiring typed frontmatter conversion.
+pub(crate) struct StructuralCounts {
+    pub sections: usize,
+    pub max_rows_per_table: usize,
+    pub rows_total: usize,
+    pub max_columns: usize,
+    pub cells_total: usize,
+    pub frontmatter_depth: usize,
+}
+
+pub(crate) fn structural_counts(source: &str) -> Result<StructuralCounts, &'static str> {
+    let parts = split_frontmatter(source).map_err(|_| "source structure cannot be verified")?;
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(parts.yaml)
+        .map_err(|_| "frontmatter structure cannot be verified")?;
+    let parsed = parse_markdown(parts.body, parts.body_line);
+    let mut max_rows_per_table: usize = 0;
+    let mut rows_total: usize = 0;
+    let mut max_columns: usize = 0;
+    let mut cells_total: usize = 0;
+    for section in &parsed.sections {
+        if let DocumentSectionBody::Table(table) = &section.body {
+            max_rows_per_table = max_rows_per_table.max(table.rows.len());
+            rows_total = rows_total
+                .checked_add(table.rows.len())
+                .ok_or("source exceeds the row limit")?;
+            max_columns = max_columns.max(table.headings.len());
+            cells_total = cells_total
+                .checked_add(table.headings.len())
+                .ok_or("source exceeds the cell limit")?;
+            for row in &table.rows {
+                cells_total = cells_total
+                    .checked_add(row.cells.len())
+                    .ok_or("source exceeds the cell limit")?;
+            }
+        }
+    }
+    Ok(StructuralCounts {
+        sections: parsed.sections.len(),
+        max_rows_per_table,
+        rows_total,
+        max_columns,
+        cells_total,
+        frontmatter_depth: yaml_depth(&yaml, 0),
+    })
+}
+
+fn yaml_depth(value: &serde_yaml::Value, depth: usize) -> usize {
+    match value {
+        serde_yaml::Value::Sequence(values) => values.iter().fold(depth, |maximum, item| {
+            maximum.max(yaml_depth(item, depth.saturating_add(1)))
+        }),
+        serde_yaml::Value::Mapping(values) => values.iter().fold(depth, |maximum, (key, item)| {
+            maximum
+                .max(yaml_depth(key, depth.saturating_add(1)))
+                .max(yaml_depth(item, depth.saturating_add(1)))
+        }),
+        _ => depth,
     }
 }
 fn span_from_offsets(
@@ -1012,7 +1205,8 @@ fn yaml_locations(yaml: &str, first_line: usize) -> Vec<YamlLocation> {
         };
         let key_column = indent + 1;
         let value_text = content[colon + 1..].trim_start();
-        let value_column = if value_text.is_empty() {
+        let value_is_empty = value_text.is_empty() || value_text.starts_with('#');
+        let value_column = if value_is_empty {
             key_column
         } else {
             indent + colon + 2 + (content[colon + 1..].len() - value_text.len())
@@ -1030,7 +1224,7 @@ fn yaml_locations(yaml: &str, first_line: usize) -> Vec<YamlLocation> {
         } else {
             path.as_str()
         };
-        if value_text.is_empty() || list_item {
+        if value_is_empty || list_item {
             parents.push((
                 if list_item {
                     indent.saturating_sub(1)
