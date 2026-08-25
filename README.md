@@ -1,6 +1,6 @@
 # ttyinv
 
-`ttyinv` is a small, local-first CLI that renders a strict Markdown invoice into a terminal-inspired, self-contained HTML document and/or an A4 PDF.
+`ttyinv` is a local-first invoice tool. Its compatibility renderer currently renders a strict Markdown invoice into a terminal-inspired, self-contained HTML document and/or an A4 PDF. The Rust engine currently validates invoices.
 
 ```text
 invoice.md  →  validated invoice model  →  HTML/CSS  →  HTML and Chromium PDF
@@ -48,7 +48,7 @@ See the [hosted service documentation](https://app.ttyinv.com/docs) for authenti
 
 ## Install for development
 
-Python 3.11 or newer is required.
+Python 3.11 or newer is required for the compatibility renderer and test suite.
 
 ```console
 git clone https://github.com/kaygdotorg/ttyinv.git
@@ -59,6 +59,24 @@ python -m playwright install chromium
 ```
 
 The source repository does not casually commit font binaries. `make visual` obtains the canonical Geist Mono assets from their official source and preserves their license for the local build.
+
+### Rust validation CLI
+
+The Rust CLI provides the local validation slice. It does not render invoices yet. Rust rendering is planned.
+
+The planned Rust PDF path will use `pdf_oxide`, subject to determinism and WebAssembly validation.
+
+One Rust engine owns every invoice rule. The native CLI, WebAssembly, REST, and MCP surfaces are adapters to that engine. The Python and TypeScript engines are temporary references pending deletion.
+
+Use Nix when Rust tools are not installed:
+
+```console
+nix shell nixpkgs#rustc nixpkgs#cargo -c cargo check --workspace
+nix shell nixpkgs#rustc nixpkgs#cargo -c cargo build --workspace --release
+make parity
+```
+
+Cargo crates are build dependencies only. A released Rust binary has no project runtime dependency. It does not require Python, Node.js, Chromium, Playwright, a package manager, or network access.
 
 ## Quick start
 
@@ -110,7 +128,6 @@ invoice:
   title: Consulting services
   issued: 2026-01-15
   due: 2026-01-29
-  currency: EUR
   locale: en-GB
 
 from:
@@ -169,7 +186,7 @@ An explicit amount is accepted when it matches the calculation. A mismatch fails
 
 ```console
 ttyinv invoice.md
-# invoice.md:… error[MONEY004]: explicit amount differs from quantity × rate
+# invoice.md:… error[SCHEMA001]: unknown frontmatter field 'foo'
 ```
 
 Two mutually exclusive escape hatches are available:
@@ -264,6 +281,8 @@ Linting checks:
 - path traversal outside the invoice directory;
 - basic palette contrast.
 
+Diagnostics use `severity`, `code`, `message`, `path`, `line`, `column`, `hint`, `section`, `row`, and `column_name`. Structured output contains all ten fields. Optional fields are `null` when they do not apply. Warnings print and leave the document valid. See [`SPEC.md`](SPEC.md) for the complete diagnostic taxonomy.
+
 Verify linked local documents too:
 
 ```console
@@ -319,9 +338,19 @@ line endings are LF, and the document ends with one newline.
 
 ## Exit codes
 
-The CLI uses stable failure categories: `0` success, `2` usage, `3` YAML,
-Markdown, or schema validation, `4` arithmetic, `5` asset or path security,
-`6` rendering, and `70` unexpected software or I/O failures.
+The CLI uses these process exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Document invalid because one or more error diagnostics were emitted |
+| `2` | Usage error |
+| `3` | Input error: unreadable input, non-UTF-8 input, or input above the size bound |
+| `4` | Output error: the CLI cannot write the requested output |
+| `5` | Reserved for render failure; unused until rendering lands |
+| `70` | Internal error |
+
+A document can contain several failure classes at once. Therefore, a failure class belongs in the diagnostic code and never in one exit status. The exit status reports only the process-level result.
 
 ## Development and privacy
 
@@ -330,9 +359,12 @@ make install
 make check
 make visual
 make build
+make rust-check
+make rust-release
+make parity
 ```
 
-`make check` runs unit tests, fabricated-invoice linting, the privacy gate, and schema validation. `make visual` installs Chromium, obtains canonical Geist Mono assets locally, renders the fabricated golden invoice, and checks relational geometry.
+`make check` runs unit tests, fabricated-invoice linting, the privacy gate, and schema validation. `make visual` installs Chromium, obtains canonical Geist Mono assets locally, renders the fabricated golden invoice, and checks relational geometry. `make parity` compares every conformance case with the Python reference CLI and the Rust validation CLI.
 
 The repository must never contain a real invoice or identifying data. Read [`PRIVACY.md`](PRIVACY.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md) before adding fixtures.
 

@@ -1,8 +1,8 @@
 # ttyinv/v1 specification
 
-Status: **stable v1 dialect**
+Status: **pre-release v1 dialect**
 
-This document defines the portable Markdown invoice format accepted by `ttyinv`. The format is intentionally narrow: YAML frontmatter carries structured invoice metadata; level-two Markdown headings and GFM tables carry titled sections; prose carries notes and links. The renderer must reject ambiguity rather than infer financial intent creatively.
+This document defines the portable Markdown invoice format accepted by `ttyinv`. The format is narrow: YAML frontmatter carries invoice metadata; H2 Markdown headings and GFM tables carry sections; prose carries notes and links. The renderer rejects ambiguity.
 
 ## 1. Document structure
 
@@ -11,6 +11,12 @@ A document is UTF-8 text with:
 1. one YAML frontmatter mapping delimited by `---` at the beginning of the file;
 2. zero or more H2 sections;
 3. GFM tables or Markdown prose within those sections.
+
+A document with no H2 sections is valid. The validator emits warning `MARKDOWN003` because the document has no H2 section.
+
+A document with no financial table emits warning `MARKDOWN002`. Warnings do not make the document invalid.
+
+An authored empty `##` heading is an error under `MARKDOWN001`. An H1 heading is an error under `MARKDOWN001`. The grammar excludes both forms.
 
 ```text
 ---
@@ -73,7 +79,7 @@ Rules:
 - dates use ISO `YYYY-MM-DD`;
 - `currency` is one uppercase three-letter code;
 - the invoice currency is the payable currency;
-- `locale` affects display formatting, not calculation semantics;
+- `locale` controls money and decimal formatting only;
 - `number`, `reference`, and `terms` are text, not numbers.
 
 ### 2.4 Parties
@@ -298,7 +304,15 @@ A row with a payable numeric amount and no quantity/rate inputs is valid. This s
 
 `ttyinv/v1` has no jurisdiction-aware or arithmetic tax engine. Tax identifiers may be displayed through party identifiers. Authors who need a tax line may represent it as an explicit financial row, but `ttyinv` does not determine legal applicability, rates, reverse charge, filing language, or compliance.
 
+### 5.7 Formatting direction
+
+Structured dates are locale-independent `YYYY-MM-DD` values everywhere.
+
+Planned `ttyinv/v2` replaces `invoice.locale` with a small set of immutable formatting presets plus direct overrides. This preset system is not implemented in `ttyinv/v1`.
+
 ## 6. Output
+
+Rust rendering for `ttyinv/v1` is planned. The compatibility renderer currently implements this output contract during migration.
 
 ### 6.1 Formats
 
@@ -383,40 +397,80 @@ Decorative frame strokes are hidden from assistive technology.
 
 ## 11. Diagnostics
 
-Diagnostics have:
+Every diagnostic record has all ten fields on every surface:
 
-```text
-severity
-code
-message
-path
-line
-column
-hint
-section
-row
-column_name
-```
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `severity` | yes | `error` or `warning` |
+| `code` | yes | Diagnostic code |
+| `message` | yes | Human-readable explanation |
+| `path` | no | Source path |
+| `line` | no | One-based source line |
+| `column` | no | One-based source column |
+| `hint` | no | Suggested correction |
+| `section` | no | Section title |
+| `row` | no | One-based table row |
+| `column_name` | no | Table heading |
 
-`section`, `row`, and `column_name` are populated for table diagnostics when
-applicable. `path`, `line`, and source `column` identify the authored token.
+Required fields always have values. Optional fields are `null` when unavailable in structured output. Human output renders the same record in compiler-style form and omits unavailable optional components. `path`, `line`, and `column` locate the authored token. `section`, `row`, and `column_name` locate table data when applicable.
+
+The complete diagnostic taxonomy is:
+
+| Code | Severity | Meaning |
+| --- | --- | --- |
+| `FRONTMATTER001` | error | Frontmatter is missing its opening or closing delimiter |
+| `YAML001` | error | YAML is malformed |
+| `SCHEMA001` | error | Typed frontmatter is invalid, or a field is unknown or missing |
+| `SCHEMA002` | error | The schema value is not supported |
+| `SCHEMA003` | error | Required text is empty |
+| `CURRENCY001` | error | The currency code is invalid |
+| `DATE001` | error | The date is invalid |
+| `DATE002` | error | The due date precedes the issue date |
+| `MARKDOWN001` | error | A heading is malformed because an H1 is present or an authored H2 is empty |
+| `MARKDOWN002` | warning | The document contains no financial table |
+| `MARKDOWN003` | warning | The document contains no H2 section |
+| `TABLE001` | error | A table has fewer than two headings |
+| `TABLE002` | error | A table has no body rows |
+| `TABLE003` | error | A body row width differs from the heading width |
+| `TABLE004` | error | A financial section contains a second table |
+| `HTML001` | error | The document contains unsupported raw HTML |
+| `LIMIT001` | error | The diagnostic limit was reached |
+
+Warnings print but do not make the document invalid. Errors make the document invalid.
 
 Human output follows the compiler-style shape:
 
 ```text
-invoice.md:24:1: error[MONEY004]: explicit amount differs from quantity × rate
+invoice.md:24:1: error[SCHEMA001]: unknown frontmatter field 'foo'
 ```
 
-`ttyinv lint --json` emits the same data as JSON.
+`ttyinv lint --json` emits all ten fields, including warning diagnostics.
 
-Process exit codes are stable: `0` success, `2` usage, `3` parse/schema, `4`
-arithmetic, `5` asset/security, `6` render, and `70` unexpected failure.
+Process exit codes are:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success |
+| `1` | Document invalid because one or more error diagnostics were emitted |
+| `2` | Usage error |
+| `3` | Input error: unreadable input, non-UTF-8 input, or input above the size bound |
+| `4` | Output error: the CLI cannot write the requested output |
+| `5` | Reserved for render failure; unused until rendering lands |
+| `70` | Internal error |
+
+A document can contain several failure classes at once. Therefore, a failure class belongs in the diagnostic code and never in one exit status. The exit status reports only the process-level result.
 
 ## 12. Compatibility policy
 
-Within `ttyinv/v1`, changes are append-only and must preserve the financial meaning of every previously valid document.
+`ttyinv/v1` never reached a published release. The append-only guarantee begins at the first tagged release. It does not apply retroactively.
 
-Allowed within v1:
+Before the first tagged release, the project may redesign the v1 dialect. After that release, changes within `ttyinv/v1` are append-only and must preserve the financial meaning of every previously valid document.
+
+### 12.1 Implementation direction
+
+One Rust engine owns every invoice rule. The native CLI, WebAssembly, REST, and MCP surfaces are adapters to that engine. The Python and TypeScript engines are temporary references pending deletion.
+
+Allowed after the first tagged release:
 
 - new optional frontmatter fields;
 - new unambiguous heading aliases;
@@ -425,7 +479,7 @@ Allowed within v1:
 - layout fixes that preserve documented geometry and semantics;
 - stricter rejection of unsafe paths or CSS injection.
 
-Not allowed within v1:
+Not allowed after the first tagged release:
 
 - changing the meaning of an existing field or column;
 - silently changing which amount column is payable;
