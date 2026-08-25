@@ -1,7 +1,7 @@
 use serde::Serialize;
 use ttyinv_core::{
     Diagnostic, MAX_SOURCE_BYTES, ScalarEditRequest, ScalarEditResponse, Severity,
-    apply_scalar as apply_scalar_engine, revision as revision_engine,
+    StructureManifest, apply_scalar as apply_scalar_engine, revision as revision_engine,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
@@ -12,17 +12,29 @@ const MAX_DECODED_REQUEST_BYTES: usize = 256 * 1024;
 struct ValidationResult<'a> {
     valid: bool,
     diagnostics: &'a [Diagnostic],
+    structure_manifest: Option<StructureManifest>,
 }
-
 /// Validate one invoice source in the browser.
 #[wasm_bindgen]
 pub fn validate(source: &str) -> Result<JsValue, JsValue> {
     if source.len() > MAX_SOURCE_BYTES {
-        return serialize_result(false, &[input_limit_diagnostic()]);
+        return serialize_result(false, &[input_limit_diagnostic()], None);
     }
 
     let report = ttyinv_core::validate(source);
-    serialize_result(report.is_valid(), report.diagnostics())
+    let manifest = ttyinv_core::structure_manifest(source).ok();
+    serialize_result(report.is_valid(), report.diagnostics(), manifest)
+}
+
+/// Return the deterministic Markdown structure manifest.
+#[wasm_bindgen]
+pub fn structure_manifest(source: &str) -> Result<JsValue, JsValue> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(JsValue::from_str("input exceeds the source size limit"));
+    }
+    let manifest = ttyinv_core::structure_manifest(source)
+        .map_err(|_| JsValue::from_str("source has no valid document structure"))?;
+    serde_wasm_bindgen::to_value(&manifest).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Return the deterministic digest of exact source bytes.
@@ -67,7 +79,15 @@ fn input_limit_diagnostic() -> Diagnostic {
     }
 }
 
-fn serialize_result(valid: bool, diagnostics: &[Diagnostic]) -> Result<JsValue, JsValue> {
-    serde_wasm_bindgen::to_value(&ValidationResult { valid, diagnostics })
-        .map_err(|error| JsValue::from_str(&error.to_string()))
+fn serialize_result(
+    valid: bool,
+    diagnostics: &[Diagnostic],
+    structure_manifest: Option<StructureManifest>,
+) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(&ValidationResult {
+        valid,
+        diagnostics,
+        structure_manifest,
+    })
+    .map_err(|error| JsValue::from_str(&error.to_string()))
 }

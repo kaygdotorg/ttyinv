@@ -73,6 +73,20 @@ enum Target {
     Frontmatter {
         path: String,
     },
+    Address {
+        root: &'static str,
+        index: usize,
+    },
+    SectionTitle {
+        section: usize,
+    },
+    SectionProse {
+        section: usize,
+    },
+    TableHeading {
+        section: usize,
+        cell: usize,
+    },
     TableCell {
         section: usize,
         row: usize,
@@ -147,9 +161,15 @@ pub fn apply_scalar(request: ScalarEditRequest) -> ScalarEditResponse {
             limit_report(message),
         );
     }
-
+    let prose_target = matches!(&target, Target::SectionProse { .. });
     let range = match target {
         Target::Frontmatter { path } => frontmatter_range(&request.source, &path),
+        Target::Address { root, index } => address_range(&request.source, root, index),
+        Target::SectionTitle { section } => section_title_range(&request.source, section),
+        Target::SectionProse { section } => section_prose_range(&request.source, section),
+        Target::TableHeading { section, cell } => {
+            table_heading_range(&request.source, section, cell)
+        }
         Target::TableCell { section, row, cell } => {
             table_cell_range(&request.source, section, row, cell)
         }
@@ -164,6 +184,16 @@ pub fn apply_scalar(request: ScalarEditRequest) -> ScalarEditResponse {
             edit_report("scalar edit target does not exist"),
         );
     };
+    if prose_target && !raw_prose_value_is_safe(&request.value) {
+        return response(
+            ScalarEditOutcome::Rejected,
+            base_revision,
+            actual_revision,
+            sequence,
+            original_source,
+            edit_report("prose value contains Markdown structure"),
+        );
+    }
     let replacement_length = match replacement_len(&request.value, &style) {
         Some(length) => length,
         None => {
@@ -204,6 +234,7 @@ pub fn apply_scalar(request: ScalarEditRequest) -> ScalarEditResponse {
     let replacement = match style {
         ReplacementStyle::Yaml(raw) => yaml_scalar(&request.value, raw),
         ReplacementStyle::Table => markdown_cell(&request.value),
+        ReplacementStyle::Raw | ReplacementStyle::Heading => request.value.clone(),
     };
     let Some(prefix) = request.source.get(..start) else {
         return response(
@@ -316,6 +347,47 @@ fn parse_target(path: &str) -> Result<Target, &'static str> {
                 path: format!("{root}.{field}"),
             })
         }
+        [root, collection, index]
+            if matches!(root.as_str(), "from" | "to")
+                && collection == "address"
+                && index.starts_with('[') =>
+        {
+            Ok(Target::Address {
+                root: if root == "from" { "from" } else { "to" },
+                index: parse_index_segment(index)?,
+            })
+        }
+        [root, collection, key]
+            if matches!(root.as_str(), "from" | "to") && collection == "identifiers" =>
+        {
+            Ok(Target::Frontmatter {
+                path: format!("{root}.{collection}.{key}"),
+            })
+        }
+        [root, section, field]
+            if root == "sections"
+                && section.starts_with('[')
+                && matches!(field.as_str(), "title" | "prose") =>
+        {
+            let section = parse_index_segment(section)?;
+            if field == "title" {
+                Ok(Target::SectionTitle { section })
+            } else {
+                Ok(Target::SectionProse { section })
+            }
+        }
+        [root, section, table, headings, cell]
+            if root == "sections"
+                && table == "table"
+                && headings == "headings"
+                && section.starts_with('[')
+                && cell.starts_with('[') =>
+        {
+            Ok(Target::TableHeading {
+                section: parse_index_segment(section)?,
+                cell: parse_index_segment(cell)?,
+            })
+        }
         [root, section, table, rows, row, cells, cell]
             if root == "sections"
                 && table == "table"
@@ -330,10 +402,37 @@ fn parse_target(path: &str) -> Result<Target, &'static str> {
             let cell = parse_index_segment(cell)?;
             Ok(Target::TableCell { section, row, cell })
         }
+        [root, field] if root == "payment" && field == "title" => Ok(Target::Frontmatter {
+            path: "payment.title".to_owned(),
+        }),
+        [root, methods, method, field]
+            if root == "payment"
+                && methods == "methods"
+                && method.starts_with('[')
+                && field == "title" =>
+        {
+            Ok(Target::Frontmatter {
+                path: format!("payment.methods{method}.title"),
+            })
+        }
+        [root, methods, method, fields, key]
+            if root == "payment"
+                && methods == "methods"
+                && method.starts_with('[')
+                && fields == "fields" =>
+        {
+            Ok(Target::Frontmatter {
+                path: format!("payment.methods{method}.fields.{key}"),
+            })
+        }
+        [root, field] if root == "signature" && matches!(field.as_str(), "name" | "label") => {
+            Ok(Target::Frontmatter {
+                path: format!("signature.{field}"),
+            })
+        }
         _ => Err("scalar edit path is not an allowed scalar target"),
     }
 }
-
 fn is_scalar_field(root: &str, field: &str) -> bool {
     match root {
         "invoice" => matches!(
@@ -344,7 +443,6 @@ fn is_scalar_field(root: &str, field: &str) -> bool {
         _ => false,
     }
 }
-
 fn parse_segments(path: &str) -> Result<Vec<Segment>, &'static str> {
     let bytes = path.as_bytes();
     let mut position = 0usize;
@@ -443,6 +541,8 @@ fn parse_index_segment(segment: &str) -> Result<usize, &'static str> {
 enum ReplacementStyle<'a> {
     Yaml(&'a str),
     Table,
+    Raw,
+    Heading,
 }
 fn frontmatter_range<'a>(
     source: &'a str,
@@ -467,6 +567,226 @@ fn frontmatter_range<'a>(
     let start = line_start.checked_add(value_start)?;
     let end = line_start.checked_add(value_end)?;
     Some((start, end, ReplacementStyle::Yaml(raw_value)))
+}
+fn address_range<'a>(
+    source: &'a str,
+    root: &str,
+    index: usize,
+) -> Option<(usize, usize, ReplacementStyle<'a>)> {
+    let parts = split_frontmatter(source).ok()?;
+    let parent = format!("{root}.address");
+    let location = yaml_locations(parts.yaml, 2)
+        .into_iter()
+        .find(|item| item.path == parent)?;
+    let (_, _, key_line) = source_line(source, location.line)?;
+    let key_indent = key_line.len() - key_line.trim_start().len();
+    let mut found = 0usize;
+    for line_number in location.line.saturating_add(1).. {
+        let (line_start, line_end, line) = source_line(source, line_number)?;
+        if line.trim() == "---" {
+            break;
+        }
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent <= key_indent {
+            break;
+        }
+        let trimmed = line.trim_start();
+        let item = trimmed.strip_prefix('-')?;
+        let value_start_rel = item.len() - item.trim_start().len();
+        let value = item
+            .get(value_start_rel..)?
+            .trim_end_matches([' ', '\t', '\r']);
+        if value.is_empty() || value.starts_with('|') || value.starts_with('>') {
+            return None;
+        }
+        if found == index {
+            for continuation_number in line_number.saturating_add(1).. {
+                let (_, _, continuation) = source_line(source, continuation_number)?;
+                if continuation.trim().is_empty() || continuation.trim_start().starts_with('#') {
+                    continue;
+                }
+                let continuation_indent = continuation.len() - continuation.trim_start().len();
+                if continuation_indent <= indent {
+                    break;
+                }
+                return None;
+            }
+            let item_start = line.len() - trimmed.len();
+            let value_start = item_start.checked_add(1)?.checked_add(value_start_rel)?;
+            let value_end = value_start.checked_add(yaml_scalar_end(value))?;
+            return Some((
+                line_start.checked_add(value_start)?,
+                line_start.checked_add(value_end)?,
+                ReplacementStyle::Yaml(value),
+            ));
+        }
+        found = found.checked_add(1)?;
+        let _ = line_end;
+    }
+    None
+}
+
+fn section_title_range(
+    source: &str,
+    section: usize,
+) -> Option<(usize, usize, ReplacementStyle<'static>)> {
+    let parsed = document(source).ok()?;
+    let section = parsed.sections.get(section)?;
+    let (_, _, line) = source_line(source, section.span.start.line)?;
+    let leading = line.len() - line.trim_start().len();
+    let rest = line.get(leading..)?;
+    if !rest.starts_with("##") || rest.as_bytes().get(2) == Some(&b'#') {
+        return None;
+    }
+    if rest
+        .as_bytes()
+        .get(2)
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
+        return None;
+    }
+    let marker_end = leading.checked_add(2)?;
+    let title_start = line[marker_end..].len() - line[marker_end..].trim_start().len();
+    let title_start = marker_end.checked_add(title_start)?;
+    let mut title_end = line.trim_end_matches([' ', '\t', '\r']).len();
+    if title_end >= title_start.saturating_add(2)
+        && line.get(title_end.saturating_sub(2)..title_end) == Some("##")
+        && title_end
+            .checked_sub(2)
+            .and_then(|position| line.as_bytes().get(position.saturating_sub(1)))
+            .is_some_and(u8::is_ascii_whitespace)
+    {
+        title_end = title_end.saturating_sub(2);
+        while title_end > title_start
+            && line
+                .as_bytes()
+                .get(title_end - 1)
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            title_end = title_end.saturating_sub(1);
+        }
+    }
+    if title_start > title_end {
+        return None;
+    }
+    Some((
+        source_line(source, section.span.start.line)?
+            .0
+            .checked_add(title_start)?,
+        source_line(source, section.span.start.line)?
+            .0
+            .checked_add(title_end)?,
+        ReplacementStyle::Heading,
+    ))
+}
+
+fn raw_prose_value_is_safe(value: &str) -> bool {
+    let lines: Vec<&str> = value.lines().collect();
+    if lines.is_empty() || lines.iter().any(|line| line.trim().is_empty()) {
+        return false;
+    }
+    !lines.iter().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with('#')
+            || trimmed.starts_with("```")
+            || trimmed.starts_with("~~~")
+            || trimmed.starts_with("<!--")
+            || trimmed.starts_with('|')
+            || trimmed.starts_with('>')
+            || (trimmed.starts_with('-')
+                && trimmed
+                    .as_bytes()
+                    .get(1)
+                    .is_some_and(u8::is_ascii_whitespace))
+            || (trimmed.starts_with('*')
+                && trimmed
+                    .as_bytes()
+                    .get(1)
+                    .is_some_and(u8::is_ascii_whitespace))
+            || (trimmed.starts_with('+')
+                && trimmed
+                    .as_bytes()
+                    .get(1)
+                    .is_some_and(u8::is_ascii_whitespace))
+    })
+}
+
+fn section_prose_range(
+    source: &str,
+    section: usize,
+) -> Option<(usize, usize, ReplacementStyle<'static>)> {
+    let parsed = document(source).ok()?;
+    let current = parsed.sections.get(section)?;
+    if !matches!(&current.body, DocumentSectionBody::Prose { .. }) {
+        return None;
+    }
+    let first_line = current.span.start.line.checked_add(1)?;
+    let last_line = parsed.sections.get(section.saturating_add(1)).map_or_else(
+        || source.lines().count(),
+        |next| next.span.start.line.saturating_sub(1),
+    );
+    let mut content = Vec::new();
+    for line_number in first_line..=last_line {
+        let (line_start, _, line) = source_line(source, line_number)?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("```")
+            || trimmed.starts_with("~~~")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("<!--")
+            || (trimmed.starts_with('|') && trimmed[1..].contains('|'))
+        {
+            return None;
+        }
+        content.push((line_start, line));
+    }
+    if content.is_empty() {
+        return None;
+    }
+    for line_number in first_line..=last_line {
+        let (_, _, line) = source_line(source, line_number)?;
+        if line.trim().is_empty() {
+            let before = line_number.saturating_sub(1);
+            let after = line_number.saturating_add(1);
+            let prior = before >= first_line
+                && source_line(source, before).is_some_and(|(_, _, item)| !item.trim().is_empty());
+            let next = after <= last_line
+                && source_line(source, after).is_some_and(|(_, _, item)| !item.trim().is_empty());
+            if prior && next {
+                return None;
+            }
+        }
+    }
+    let (start, _) = content.first().copied()?;
+    let (last_start, last_line_text) = content.last().copied()?;
+    let end = last_start.checked_add(last_line_text.len())?;
+    Some((start, end, ReplacementStyle::Raw))
+}
+
+fn table_heading_range(
+    source: &str,
+    section: usize,
+    cell: usize,
+) -> Option<(usize, usize, ReplacementStyle<'static>)> {
+    let parsed = document(source).ok()?;
+    let section_value = parsed.sections.get(section)?;
+    let table = match &section_value.body {
+        DocumentSectionBody::Table(table) => table,
+        DocumentSectionBody::Prose { .. } => return None,
+    };
+    let heading = table.headings.get(cell)?;
+    let (line_start, _, line) = source_line(source, heading.span.start.line)?;
+    let (start, end) = markdown_cell_offsets(line, cell)?;
+    Some((
+        line_start.checked_add(start)?,
+        line_start.checked_add(end)?,
+        ReplacementStyle::Table,
+    ))
 }
 
 fn yaml_scalar_end(value: &str) -> usize {
@@ -523,7 +843,12 @@ fn yaml_scalar_is_multiline(
     key_indent: usize,
     value: &str,
 ) -> bool {
+    let list_item = source_line(source, line_number)
+        .is_some_and(|(_, _, line)| line.trim_start().starts_with("- "));
     let trimmed = value.trim_start();
+    if trimmed.starts_with('|') || trimmed.starts_with('>') {
+        return true;
+    }
     if trimmed.starts_with('\'')
         && yaml_scalar_end(trimmed) == trimmed.len()
         && !trimmed.ends_with('\'')
@@ -552,6 +877,9 @@ fn yaml_scalar_is_multiline(
         let indent = line.len() - line.trim_start().len();
         if indent <= key_indent {
             break;
+        }
+        if list_item && content.contains(':') {
+            continue;
         }
         return true;
     }
@@ -684,6 +1012,9 @@ fn replacement_len(value: &str, style: &ReplacementStyle<'_>) -> Option<usize> {
     match style {
         ReplacementStyle::Yaml(current) => yaml_scalar_len(value, current),
         ReplacementStyle::Table => markdown_cell_len(value),
+        ReplacementStyle::Raw => Some(value.len()),
+        ReplacementStyle::Heading if value.contains(['\n', '\r']) => None,
+        ReplacementStyle::Heading => Some(value.len()),
     }
 }
 
@@ -911,6 +1242,92 @@ mod tests {
                 ScalarEditOutcome::Applied | ScalarEditOutcome::AppliedWithErrors
             ));
             assert!(result.source.contains("Changed"));
+        }
+    }
+
+    const EXTENDED_SOURCE: &str = "---\nschema: ttyinv/v1\ninvoice:\n  number: INV-1\n  issued: 2026-01-01\n  currency: USD\nfrom:\n  name: Alice\n  address:\n    - Main Street\n    - Suite 2\n  identifiers:\n    tax_id: TAX-1\nto:\n  name: Bob\n  address:\n    - Other Street\n  identifiers:\n    vat_id: VAT-1\npayment:\n  title: Pay here\n  methods:\n    - title: Bank transfer\n      fields:\n        iban: DE123\nsignature:\n  name: Alice\n  label: Signed\n---\n\n## Intro\n\nFirst prose line.\n\n## Items\n\n| Description | Amount |\n| :--- | ---: |\n| One | 10 |\n";
+
+    #[test]
+    fn every_authored_scalar_path_applies_losslessly() {
+        for path in [
+            "from.address[0]",
+            "from.address[1]",
+            "from.identifiers.tax_id",
+            "to.address[0]",
+            "to.identifiers.vat_id",
+            "payment.title",
+            "payment.methods[0].title",
+            "payment.methods[0].fields.iban",
+            "signature.name",
+            "signature.label",
+            "sections[0].title",
+            "sections[1].table.headings[0]",
+        ] {
+            let result = apply_scalar(request(EXTENDED_SOURCE, path, "Changed"));
+            assert!(
+                matches!(
+                    result.outcome,
+                    ScalarEditOutcome::Applied | ScalarEditOutcome::AppliedWithErrors
+                ),
+                "{path}: {:?}",
+                result.outcome
+            );
+            assert!(result.source.contains("Changed"));
+        }
+        let heading = apply_scalar(request(
+            EXTENDED_SOURCE,
+            "sections[1].table.headings[0]",
+            "A|B",
+        ));
+        assert!(heading.source.contains("| A\\|B | Amount |"));
+        assert!(heading.source.contains("| :--- | ---: |"));
+    }
+
+    #[test]
+    fn prose_patch_preserves_adjacent_section_and_multiline_value() {
+        let result = apply_scalar(request(
+            EXTENDED_SOURCE,
+            "sections[0].prose",
+            "First replacement.\nSecond replacement.",
+        ));
+        assert!(
+            result
+                .source
+                .contains("First replacement.\nSecond replacement.")
+        );
+        assert!(result.source.contains("## Items"));
+        assert!(result.source.contains("| One | 10 |"));
+    }
+
+    #[test]
+    fn prose_patch_rejects_ambiguous_blocks_without_changing_source() {
+        let source = EXTENDED_SOURCE.replace(
+            "First prose line.\n",
+            "First prose line.\n\nSecond block.\n",
+        );
+        let result = apply_scalar(request(&source, "sections[0].prose", "Changed"));
+        assert_eq!(result.outcome, ScalarEditOutcome::Rejected);
+        assert_eq!(result.source, source);
+    }
+
+    #[test]
+    fn prose_structural_injection_is_rejected_without_source_change() {
+        let result = apply_scalar(request(
+            EXTENDED_SOURCE,
+            "sections[0].prose",
+            "Text\n\n## Added",
+        ));
+        assert_eq!(result.outcome, ScalarEditOutcome::Rejected);
+        assert_eq!(result.source, EXTENDED_SOURCE);
+    }
+
+    #[test]
+    fn scalar_map_paths_require_existing_safe_keys() {
+        let unsafe_source = EXTENDED_SOURCE.replace("    tax_id: TAX-1", "    \"tax.id\": TAX-1");
+        for path in ["from.identifiers.tax.id", "from.identifiers.missing"] {
+            let result = apply_scalar(request(&unsafe_source, path, "Changed"));
+            assert_eq!(result.outcome, ScalarEditOutcome::Rejected);
+            assert_eq!(result.source, unsafe_source);
         }
     }
 

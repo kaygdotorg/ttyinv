@@ -405,6 +405,27 @@ pub struct DocumentCell {
     pub span: SourceSpan,
 }
 
+/// The deterministic structure shared by the Rust engine and browser adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StructureManifest {
+    pub sections: Vec<StructureManifestSection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StructureManifestSection {
+    pub index: usize,
+    pub title: String,
+    pub kind: &'static str,
+    pub headings: Vec<String>,
+    pub body_row_count: usize,
+}
+
+/// Build the structure manifest from one parsed document.
+pub fn structure_manifest(source: &str) -> Result<StructureManifest, ValidationReport> {
+    let parsed = document(source)?;
+    Ok(parsed.structure_manifest())
+}
+
 /// The ordered, typed document consumed by adapters and renderers.
 #[derive(Debug)]
 pub struct Document {
@@ -414,6 +435,39 @@ pub struct Document {
     /// Source spans indexed by canonical field path.
     pub spans: BTreeMap<String, SourceSpan>,
     pub span: SourceSpan,
+}
+
+impl Document {
+    /// Build the deterministic structure manifest without reparsing source.
+    pub fn structure_manifest(&self) -> StructureManifest {
+        StructureManifest {
+            sections: self
+                .sections
+                .iter()
+                .enumerate()
+                .map(|(index, section)| match &section.body {
+                    DocumentSectionBody::Prose { .. } => StructureManifestSection {
+                        index,
+                        title: section.title.clone(),
+                        kind: "prose",
+                        headings: Vec::new(),
+                        body_row_count: 0,
+                    },
+                    DocumentSectionBody::Table(table) => StructureManifestSection {
+                        index,
+                        title: section.title.clone(),
+                        kind: "table",
+                        headings: table
+                            .headings
+                            .iter()
+                            .map(|cell| cell.text.clone())
+                            .collect(),
+                        body_row_count: table.rows.len(),
+                    },
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Parse one complete invoice into the shared document model.
@@ -491,22 +545,31 @@ fn node_spans(
     }
     for (index, section) in sections.iter().enumerate() {
         spans.insert(format!("sections[{index}].title"), section.span);
-        if let DocumentSectionBody::Table(table) = &section.body {
-            spans.insert(format!("sections[{index}].table"), table.span);
-            for (row_index, row) in table.rows.iter().enumerate() {
-                spans.insert(
-                    format!("sections[{index}].table.rows[{row_index}]"),
-                    row.span,
-                );
-                for cell in &row.cells {
-                    spans.insert(cell.path.clone(), cell.span);
-                }
+        match &section.body {
+            DocumentSectionBody::Prose { span, .. } => {
+                spans.insert(format!("sections[{index}].prose"), *span);
             }
-            for (column_index, cell) in table.headings.iter().enumerate() {
-                spans.insert(
-                    format!("sections[{index}].table.columns[{column_index}].name"),
-                    cell.span,
-                );
+            DocumentSectionBody::Table(table) => {
+                spans.insert(format!("sections[{index}].table"), table.span);
+                for (row_index, row) in table.rows.iter().enumerate() {
+                    spans.insert(
+                        format!("sections[{index}].table.rows[{row_index}]"),
+                        row.span,
+                    );
+                    for cell in &row.cells {
+                        spans.insert(cell.path.clone(), cell.span);
+                    }
+                }
+                for (column_index, cell) in table.headings.iter().enumerate() {
+                    spans.insert(
+                        format!("sections[{index}].table.columns[{column_index}].name"),
+                        cell.span,
+                    );
+                    spans.insert(
+                        format!("sections[{index}].table.headings[{column_index}]"),
+                        cell.span,
+                    );
+                }
             }
         }
     }
@@ -918,9 +981,32 @@ fn parse_markdown(body: &str, first_line: usize) -> ParsedMarkdown {
                 codes::HTML001,
                 "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
             ),
-
             last_event_location,
         ));
+    }
+    for index in 0..sections.len() {
+        let heading_line = sections[index].span.start.line;
+        let body_start = line_index
+            .starts
+            .get(heading_line.saturating_sub(first_line).saturating_add(1))
+            .copied()
+            .unwrap_or(body.len());
+        let body_end = sections
+            .get(index + 1)
+            .and_then(|next| {
+                line_index
+                    .starts
+                    .get(next.span.start.line.saturating_sub(first_line))
+            })
+            .copied()
+            .unwrap_or(body.len());
+        if let DocumentSectionBody::Prose { text, span } = &mut sections[index].body {
+            *text = body
+                .get(body_start..body_end)
+                .unwrap_or_default()
+                .to_owned();
+            *span = span_from_offsets(&line_index, first_line, body_start, body_end);
+        }
     }
     ParsedMarkdown {
         sections,
@@ -1707,6 +1793,31 @@ mod tests {
 
     fn valid_body() -> &'static str {
         "\n## Services\n\n| Description | Amount (EUR) |\n| --- | ---: |\n| Work | 10 |\n"
+    }
+
+    #[test]
+    fn structure_manifest_is_deterministic_and_exact() {
+        let source = source(valid_frontmatter(), valid_body());
+        let first = structure_manifest(&source).expect("valid manifest");
+        let second = structure_manifest(&source).expect("valid manifest");
+        assert_eq!(first, second);
+        assert_eq!(first.sections.len(), 1);
+        assert_eq!(first.sections[0].index, 0);
+        assert_eq!(first.sections[0].title, "Services");
+        assert_eq!(first.sections[0].kind, "table");
+        assert_eq!(first.sections[0].headings, ["Description", "Amount (EUR)"]);
+        assert_eq!(first.sections[0].body_row_count, 1);
+    }
+
+    #[test]
+    fn prose_manifest_span_points_to_body() {
+        let source = source(
+            valid_frontmatter(),
+            "\n## Notes\n\nFirst line.\nSecond line.\n",
+        );
+        let parsed = document(&source).expect("valid document");
+        let span = parsed.spans.get("sections[0].prose").expect("prose span");
+        assert_ne!(*span, parsed.sections[0].span);
     }
 
     #[test]
