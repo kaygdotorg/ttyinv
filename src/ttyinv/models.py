@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .colors import validate_css_color
+from .dates import canonical_date
 from .errors import TtyinvError
 
 
@@ -87,24 +88,20 @@ class InvoiceMeta(StrictModel):
     @field_validator("issued", "due", mode="before")
     @classmethod
     def normalise_date_scalar(cls, value: object) -> object:
-        if value is None or isinstance(value, str):
+        if value is None:
             return value
-        if isinstance(value, (date, datetime)):
-            return value.isoformat()
-        return str(value)
+        return canonical_date(value)
 
     @model_validator(mode="after")
     def validate_date_order(self) -> InvoiceMeta:
         if not self.due:
             return self
-        try:
-            issued = date.fromisoformat(self.issued)
-            due = date.fromisoformat(self.due)
-        except ValueError:
-            return self
+        issued = date.fromisoformat(self.issued)
+        due = date.fromisoformat(self.due)
         if due < issued:
             raise ValueError("due date must be on or after issue date")
         return self
+
 
     @field_validator("currency")
     @classmethod
@@ -165,11 +162,7 @@ class Settlement(StrictModel):
     @field_validator("date", mode="before")
     @classmethod
     def normalise_date_scalar(cls, value: object) -> object:
-        if isinstance(value, str):
-            return value
-        if isinstance(value, (date, datetime)):
-            return value.isoformat()
-        return str(value)
+        return canonical_date(value)
 
 
 class InvoiceFrontmatter(StrictModel):

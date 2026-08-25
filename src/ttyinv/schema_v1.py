@@ -6,6 +6,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+_DATE_PATTERN = r"^(?!0000-)(?:(?:[0-9][0-9][2468][048]|[0-9][0-9][13579][26]|[0-9][0-9]0[48]|[02468][048]00|[13579][26]00)-02-29|[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|(?:02)-(?:0[1-9]|1[0-9]|2[0-8])))$"
 _SCHEMA: dict[str, object] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://github.com/kaygdotorg/ttyinv/blob/main/schema/ttyinv-v1.schema.json",
@@ -23,8 +24,8 @@ _SCHEMA: dict[str, object] = {
                 "number": {"type": "string", "minLength": 1},
                 "kind": {"enum": ["standard", "gst"], "default": "standard"},
                 "title": {"type": "string", "default": "Invoice"},
-                "issued": {"type": "string"},
-                "due": {"type": "string"},
+                "issued": {"type": "string", "pattern": _DATE_PATTERN},
+                "due": {"type": "string", "pattern": _DATE_PATTERN},
                 "currency": {"type": "string", "pattern": "^[A-Za-z]{3}$"},
                 "locale": {"type": "string", "default": "en-GB"},
                 "terms": {"type": "string"},
@@ -105,7 +106,7 @@ _SCHEMA: dict[str, object] = {
             "additionalProperties": False,
             "required": ["date", "paid"],
             "properties": {
-                "date": {"type": "string"},
+                "date": {"type": "string", "pattern": _DATE_PATTERN},
                 "paid": {"$ref": "#/$defs/money"},
                 "received": {"$ref": "#/$defs/money"},
             },

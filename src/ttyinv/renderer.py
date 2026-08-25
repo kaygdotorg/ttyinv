@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 
 from .assets import embed_local_asset
 from .colors import contrast_ratio, validate_css_color
+from .dates import display_date
 from .components import esc, render_financial_section, render_party, render_prose_section, render_section, render_table, section_id
 from .errors import TtyinvError
 from .fonts import FontAssets, resolve_font_assets
@@ -137,7 +138,7 @@ def render_html(invoice: CalculatedInvoice, options: RenderOptions) -> RenderRes
     due_html = ""
     if meta.due:
         terms = f" · {esc(meta.terms)}" if meta.terms else ""
-        due_html = f"<dt>Due</dt><dd>{esc(meta.due)}{terms}</dd>"
+        due_html = f"<dt>Due</dt><dd>{esc(display_date(meta.due))}{terms}</dd>"
     elif meta.terms:
         due_html = f"<dt>Terms</dt><dd>{esc(meta.terms)}</dd>"
 
@@ -160,7 +161,7 @@ def render_html(invoice: CalculatedInvoice, options: RenderOptions) -> RenderRes
         rows: list[list[tuple[str, str]]] = []
         for settlement in frontmatter.settlements:
             received = display_money(settlement.received.amount, settlement.received.currency, locale) if settlement.received else "-"
-            rows.append([(esc(settlement.date), ""), (esc(display_money(settlement.paid.amount, settlement.paid.currency, locale)), "numeric"), (esc(received), "numeric")])
+            rows.append([(esc(display_date(settlement.date)), ""), (esc(display_money(settlement.paid.amount, settlement.paid.currency, locale)), "numeric"), (esc(received), "numeric")])
         table = render_table(caption="Settlement records", headers=["Date", "Paid", "Received"], widths=[34.0, 33.0, 33.0], header_classes=["", "numeric", "numeric"], rows=rows)
         settlement_html = render_section(title="Settlement", section_id_value="settlement-label", body=f'{table}<div class="table-end-rule" aria-hidden="true"></div>', css_class="document-section settlement-block")
 
@@ -204,8 +205,7 @@ def render_html(invoice: CalculatedInvoice, options: RenderOptions) -> RenderRes
 <article class="invoice-sheet" aria-labelledby="invoice-title">
   <div class="page-frame" aria-hidden="true"></div>
   <span class="frame-corner tl" aria-hidden="true">+</span><span class="frame-corner tr" aria-hidden="true">+</span><span class="frame-corner bl" aria-hidden="true">+</span><span class="frame-corner br" aria-hidden="true">+</span>
-  <div class="invoice-badge" id="invoice-title">[ {esc(meta.title)} - {esc(display_money(invoice.grand_total, currency, locale))} ]</div>
-  <header class="invoice-header"><div class="brand-row">{f'<img class="brand-logo" src="{esc(logo)}" alt="{esc(frontmatter.issuer.name)} logo">' if logo else ''}<div class="brand-name">{esc(frontmatter.issuer.name)}</div></div><dl class="invoice-meta"><dt>Ref</dt><dd>{esc(meta.number)}</dd><dt>Issued</dt><dd>{esc(meta.issued)}</dd>{due_html}</dl></header>
+  <header class="invoice-header"><div class="brand-row">{f'<img class="brand-logo" src="{esc(logo)}" alt="{esc(frontmatter.issuer.name)} logo">' if logo else ''}<div class="brand-name">{esc(frontmatter.issuer.name)}</div></div><dl class="invoice-meta"><dt>Ref</dt><dd>{esc(meta.number)}</dd><dt>Issued</dt><dd>{esc(display_date(meta.issued))}</dd>{due_html}</dl></header>
   <section class="parties">{render_party(frontmatter.issuer, "From", "from-label")}{render_party(frontmatter.recipient, "Bill to", "bill-to-label")}</section>
   {f'<section class="preamble">{invoice.preamble_html}</section>' if invoice.preamble_html else ''}
   <main>{sections_html}{amount_words_html}{settlement_html}{settlement_words_html}</main>

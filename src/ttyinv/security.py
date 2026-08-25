@@ -17,6 +17,7 @@ import yaml
 
 from .diagnostics import Diagnostic
 from .errors import TtyinvError
+from .yaml_support import MAX_YAML_DEPTH, StringDateSafeLoader
 
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 _MARKDOWN_LINK_RE = re.compile(r"(?P<image>!)?\[(?P<label>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+[\"'][^\"']*[\"'])?\)")
@@ -92,16 +93,31 @@ def resolve_local_path(
     return resolved
 
 
-def _walk_yaml_paths(value: Any) -> Iterable[str]:
-    if isinstance(value, dict):
-        for child_key, child_value in value.items():
-            normalized = str(child_key).strip().casefold().replace("-", "_")
-            if normalized in _PATH_KEYS and isinstance(child_value, str):
-                yield child_value
-            yield from _walk_yaml_paths(child_value)
-    elif isinstance(value, list):
-        for child in value:
-            yield from _walk_yaml_paths(child)
+def _walk_yaml_paths(value: Any, *, _active: set[int] | None = None, _depth: int = 0) -> Iterable[str]:
+    """Yield local paths without following cycles or deep YAML structures."""
+    if _depth > MAX_YAML_DEPTH:
+        return
+    if _active is None:
+        _active = set()
+    identity: int | None = None
+    if isinstance(value, (dict, list)):
+        identity = id(value)
+        if identity in _active:
+            return
+        _active.add(identity)
+    try:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                normalized = str(child_key).strip().casefold().replace("-", "_")
+                if normalized in _PATH_KEYS and isinstance(child_value, str):
+                    yield child_value
+                yield from _walk_yaml_paths(child_value, _active=_active, _depth=_depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                yield from _walk_yaml_paths(child, _active=_active, _depth=_depth + 1)
+    finally:
+        if identity is not None:
+            _active.remove(identity)
 
 
 def _line_column(source: str, offset: int) -> tuple[int, int]:
@@ -116,8 +132,8 @@ def scan_local_references(source_path: Path, source: str) -> list[LocalReference
     frontmatter_match = _FRONTMATTER_RE.search(source)
     if frontmatter_match:
         try:
-            parsed = yaml.safe_load(frontmatter_match.group("yaml")) or {}
-        except yaml.YAMLError:
+            parsed = yaml.load(frontmatter_match.group("yaml"), Loader=StringDateSafeLoader) or {}
+        except (yaml.YAMLError, RecursionError):
             parsed = {}
         for raw in _walk_yaml_paths(parsed):
             offset = source.find(raw, frontmatter_match.start("yaml"))

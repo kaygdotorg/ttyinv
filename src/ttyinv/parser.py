@@ -19,6 +19,7 @@ from .models import (
     ProseSection,
     TableCell,
 )
+from .yaml_support import StringDateSafeLoader
 
 _FRONTMATTER_RE = re.compile(r"\A\ufeff?---\s*\r?\n(?P<yaml>[\s\S]*?)\r?\n---\s*(?:\r?\n|\Z)")
 _BR_RE = re.compile(r"&lt;br\s*/?&gt;", re.IGNORECASE)
@@ -27,6 +28,12 @@ _SUMMARY_ONLY_LINE_RE = re.compile(r"^[ \t]*<!-- ttyinv:summary-only -->[ \t]*$"
 _H2_LINE_RE = re.compile(r"^[ \t]{0,3}##[ \t]+")
 _FENCE_START_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 
+
+def _safe_validation_message(exc: ValidationError) -> str:
+    for error in exc.errors(include_url=False):
+        if error.get("msg") == "Value error, due date must be on or after issue date":
+            return "due date must be on or after issue date"
+    return "Invalid invoice frontmatter."
 
 def _markdown() -> MarkdownIt:
     return MarkdownIt(
@@ -219,7 +226,7 @@ def _split_sections(
                     f"Financial section {title!r} must contain exactly one table. Use one level-two heading per table."
                 )
             close_index = table_close_indexes[0]
-            trailing = content[close_index + 1 :]
+            trailing = [token for token in content[close_index + 1 :] if token.type != "fence"]
             if trailing:
                 raise TtyinvError(
                     f"Financial section {title!r} must contain only one table. Put notes in a separate section."
@@ -251,22 +258,23 @@ def parse_invoice_file(source_path: str | Path) -> ParsedInvoice:
     absolute_path = Path(source_path).expanduser().resolve()
     try:
         source = absolute_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise TtyinvError(f"Cannot read invoice {absolute_path}: {exc}") from exc
+    except (OSError, UnicodeError) as exc:
+        raise TtyinvError("Cannot read invoice.") from exc
 
     match = _FRONTMATTER_RE.match(source)
     if not match:
         raise TtyinvError("Invoice must begin with YAML frontmatter delimited by --- lines.")
 
     try:
-        raw_frontmatter: Any = yaml.safe_load(match.group("yaml"))
-    except yaml.YAMLError as exc:
-        raise TtyinvError(f"Invalid YAML frontmatter: {exc}") from exc
+        raw_frontmatter: Any = yaml.load(match.group("yaml"), Loader=StringDateSafeLoader)
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise TtyinvError("Invalid YAML frontmatter.") from exc
 
     try:
         frontmatter = InvoiceFrontmatter.model_validate(raw_frontmatter)
-    except ValidationError as exc:
-        raise TtyinvError(f"Invalid invoice frontmatter:\n{exc}") from exc
+    except (ValidationError, RecursionError) as exc:
+        message = _safe_validation_message(exc) if isinstance(exc, ValidationError) else "Invalid invoice frontmatter."
+        raise TtyinvError(message) from exc
 
     body = source[match.end() :]
     page_break_indexes, summary_only_indexes = _directive_indexes(body)

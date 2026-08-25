@@ -18,6 +18,7 @@ from .diagnostics import Diagnostic
 from .models import InvoiceFrontmatter
 from .money import RATE_ROUNDING_WARNING_CODE, within_authored_rate_rounding
 from .security import validate_local_references
+from .yaml_support import MAX_YAML_DEPTH, StringDateSafeLoader
 
 _FRONT = re.compile(r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
 _H2 = re.compile(r"^##[ \t]+(?P<title>.+?)[ \t]*$")
@@ -28,18 +29,40 @@ _RATE = {"rate", "unit price", "unit_price", "price"}
 _DESCRIPTION = {"description", "item", "service"}
 
 
-class UniqueKeyLoader(yaml.SafeLoader):
+class UniqueKeyLoader(StringDateSafeLoader):
     pass
+
+
+class _YamlTraversalError(Exception):
+    """Report a YAML alias cycle or excessive nesting."""
 
 
 def _construct_mapping(loader: UniqueKeyLoader, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
     mapping: dict[Any, Any] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise ConstructorError("while constructing a mapping", node.start_mark, f"found duplicate key {key!r}", key_node.start_mark)
-        mapping[key] = loader.construct_object(value_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise ConstructorError("while constructing a mapping", node.start_mark, "mapping keys must be hashable", key_node.start_mark) from exc
+        if duplicate:
+            raise ConstructorError("while constructing a mapping", node.start_mark, "found duplicate key", key_node.start_mark)
+        try:
+            mapping[key] = loader.construct_object(value_node, deep=deep)
+        except TypeError as exc:
+            raise ConstructorError("while constructing a mapping", node.start_mark, "mapping keys must be hashable", key_node.start_mark) from exc
     return mapping
+
+
+def _safe_schema_message(error: dict[str, Any]) -> str:
+    message = str(error.get("msg", ""))
+    if "real calendar date" in message:
+        return "date must be a real calendar date"
+    if "YYYY-MM-DD" in message:
+        return "date must use YYYY-MM-DD"
+    if "due date must be on or after issue date" in message:
+        return "due date must be on or after issue date"
+    return "invalid value"
 
 
 UniqueKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
@@ -188,9 +211,12 @@ def _frontmatter(path: Path, source: str) -> tuple[dict[str, Any] | None, str, i
         return None, source, 1, [Diagnostic("error", "YAML001", "invoice must begin with YAML frontmatter delimited by ---", str(path), 1, 1)]
     try:
         data = yaml.load(match.group("yaml"), Loader=UniqueKeyLoader) or {}
+    except RecursionError:
+        return None, source[match.end():], 1, [Diagnostic("error", "YAML002", "YAML nesting exceeds the supported limit", str(path), 2, 1)]
     except yaml.MarkedYAMLError as exc:
         mark = exc.problem_mark
-        return None, source[match.end():], 1, [Diagnostic("error", "YAML002", exc.problem or str(exc), str(path), mark.line + 2 if mark else 1, mark.column + 1 if mark else 1)]
+        message = "mapping keys must be hashable" if exc.problem == "mapping keys must be hashable" else "invalid YAML frontmatter"
+        return None, source[match.end():], 1, [Diagnostic("error", "YAML002", message, str(path), mark.line + 2 if mark else 1, mark.column + 1 if mark else 1)]
     if not isinstance(data, dict):
         return None, source[match.end():], 1, [Diagnostic("error", "YAML003", "frontmatter root must be a mapping", str(path), 2, 1)]
     return data, source[match.end():], source.count("\n", 0, match.end()) + 1, []
@@ -200,27 +226,37 @@ YamlPath = tuple[str | int, ...]
 
 
 def _yaml_locations(yaml_source: str) -> dict[YamlPath, tuple[int, int]]:
-    """Map YAML object paths to their key/item positions in the invoice file."""
-
-    root = yaml.compose(yaml_source, Loader=UniqueKeyLoader)
+    """Map YAML object paths while rejecting cycles and deep nesting."""
+    try:
+        root = yaml.compose(yaml_source, Loader=UniqueKeyLoader)
+    except RecursionError as exc:
+        raise _YamlTraversalError from exc
     locations: dict[YamlPath, tuple[int, int]] = {}
+    active: set[int] = set()
 
-    def visit(node: yaml.Node, path: YamlPath) -> None:
-        locations.setdefault(path, (node.start_mark.line + 2, node.start_mark.column + 1))
-        if isinstance(node, yaml.MappingNode):
-            for key_node, value_node in node.value:
-                key = str(key_node.value)
-                child = (*path, key)
-                locations[child] = (key_node.start_mark.line + 2, key_node.start_mark.column + 1)
-                visit(value_node, child)
-        elif isinstance(node, yaml.SequenceNode):
-            for index, child_node in enumerate(node.value):
-                child = (*path, index)
-                locations[child] = (child_node.start_mark.line + 2, child_node.start_mark.column + 1)
-                visit(child_node, child)
+    def visit(node: yaml.Node, path: YamlPath, depth: int) -> None:
+        identity = id(node)
+        if depth > MAX_YAML_DEPTH or identity in active:
+            raise _YamlTraversalError
+        active.add(identity)
+        try:
+            locations.setdefault(path, (node.start_mark.line + 2, node.start_mark.column + 1))
+            if isinstance(node, yaml.MappingNode):
+                for key_node, value_node in node.value:
+                    key = str(key_node.value)
+                    child = (*path, key)
+                    locations[child] = (key_node.start_mark.line + 2, key_node.start_mark.column + 1)
+                    visit(value_node, child, depth + 1)
+            elif isinstance(node, yaml.SequenceNode):
+                for index, child_node in enumerate(node.value):
+                    child = (*path, index)
+                    locations[child] = (child_node.start_mark.line + 2, child_node.start_mark.column + 1)
+                    visit(child_node, child, depth + 1)
+        finally:
+            active.remove(identity)
 
     if root is not None:
-        visit(root, ())
+        visit(root, (), 0)
     return locations
 
 
@@ -257,7 +293,7 @@ def _schema_checks(path: Path, data: dict[str, Any], locations: dict[YamlPath, t
                 message = "unsupported schema; expected ttyinv/v1"
             else:
                 code = "SCHEMA005"
-                message = f"invalid {dotted or 'frontmatter'}: {error['msg']}"
+                message = f"invalid {dotted or 'frontmatter'}: {_safe_schema_message(error)}"
             diagnostics.append(Diagnostic("error", code, message, str(path), line, column))
         return diagnostics
     return []
@@ -339,12 +375,18 @@ def lint_source(
     tables: list[Table] = []
     if data is not None:
         match = _FRONT.search(text)
-        locations = _yaml_locations(match.group("yaml")) if match else {}
-        schema_diagnostics = _schema_checks(source_path, data, locations)
+        yaml_structure_error = False
+        try:
+            locations = _yaml_locations(match.group("yaml")) if match else {}
+        except _YamlTraversalError:
+            locations = {}
+            yaml_structure_error = True
+            diagnostics.append(Diagnostic("error", "YAML002", "YAML nesting or aliases exceed the supported limit", str(source_path), 2, 1))
+        schema_diagnostics = [] if yaml_structure_error else _schema_checks(source_path, data, locations)
         diagnostics.extend(schema_diagnostics)
         tables, table_diagnostics = parse_tables(body, first_line)
         diagnostics.extend(replace(item, path=str(source_path)) for item in table_diagnostics)
-        if not schema_diagnostics:
+        if not schema_diagnostics and not yaml_structure_error:
             diagnostics.extend(_money_checks(source_path, data, tables, amount_policy))
     reference_diagnostics = validate_local_references(source_path, text, allow_outside_root=allow_outside_root, require_link_targets=require_link_targets)
     heading_lines = [

@@ -5,8 +5,8 @@ schema: ttyinv/v1
 invoice:
   number: INV-2026-001
   title: Invoice
-  issued: 20 Aug 2026
-  due: 3 Sep 2026
+  issued: 2026-08-20
+  due: 2026-09-03
   terms: Net 14
   currency: EUR
   locale: en-GB
