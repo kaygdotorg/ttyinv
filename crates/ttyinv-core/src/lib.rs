@@ -164,10 +164,42 @@ struct YamlLocation {
     value: String,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BodyLocation {
     line: usize,
     column: usize,
+}
+#[derive(Debug)]
+struct LineIndex {
+    starts: Vec<usize>,
+    body_len: usize,
+}
+
+impl LineIndex {
+    fn new(body: &str) -> Self {
+        let mut starts = vec![0];
+        for (offset, byte) in body.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(offset + 1);
+            }
+        }
+        Self {
+            starts,
+            body_len: body.len(),
+        }
+    }
+
+    fn location(&self, offset: usize, first_line: usize) -> BodyLocation {
+        let offset = offset.min(self.body_len);
+        let line_index = match self.starts.binary_search(&offset) {
+            Ok(index) => index,
+            Err(index) => index.saturating_sub(1),
+        };
+        BodyLocation {
+            line: first_line + line_index,
+            column: offset - self.starts[line_index] + 1,
+        }
+    }
 }
 
 /// Maximum source size accepted by adapters.
@@ -293,7 +325,7 @@ pub fn document(source: &str) -> Result<Document, ValidationReport> {
                 Code::Schema001.default_message(),
             )],
         })?;
-    let sections = document_sections(parts.body, parts.body_line);
+    let sections = parse_markdown(parts.body, parts.body_line).sections;
     let spans = node_spans(&locations, &sections);
     let span = source_span(&locations);
     set_frontmatter_spans(&mut frontmatter, span);
@@ -400,64 +432,218 @@ fn set_frontmatter_spans(frontmatter: &mut Frontmatter, span: SourceSpan) {
     }
 }
 
-// This walk builds the renderer-facing table tree. It must agree with validate_markdown.
-// Unify both walks before adding rendering rules.
-fn document_sections(body: &str, first_line: usize) -> Vec<DocumentSection> {
+#[derive(Debug)]
+struct ParsedMarkdown {
+    sections: Vec<DocumentSection>,
+    validation_sections: Vec<ValidationSection>,
+    diagnostics: Vec<Diagnostic>,
+    width_issues: Vec<WidthIssue>,
+    first_body_location: BodyLocation,
+}
+
+#[derive(Debug)]
+struct ValidationSection {
+    title: String,
+    tables: usize,
+    financial_tables: usize,
+    second_table_start: Option<BodyLocation>,
+}
+
+#[derive(Debug)]
+struct ValidationTable {
+    heading_cells: usize,
+    body_rows: usize,
+    headings: Vec<String>,
+    rows: Vec<(usize, BodyLocation)>,
+    section_index: usize,
+    start: BodyLocation,
+}
+
+#[derive(Debug)]
+struct WidthIssue {
+    expected: usize,
+    actual: usize,
+    line: usize,
+    section_index: usize,
+    row: usize,
+    column_name: Option<String>,
+}
+
+fn parse_markdown(body: &str, first_line: usize) -> ParsedMarkdown {
+    let line_index = LineIndex::new(body);
     let parser = Parser::new_ext(body, Options::ENABLE_TABLES);
     let mut sections = Vec::new();
+    let mut validation_sections = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut width_issues = Vec::new();
     let mut heading: Option<(String, usize)> = None;
     let mut active_table: Option<(usize, DocumentTable)> = None;
     let mut active_row: Option<(usize, Vec<DocumentCell>, usize)> = None;
     let mut current_cell: Option<(String, usize)> = None;
     let mut in_head = false;
+    let mut heading_level: Option<HeadingLevel> = None;
+    let mut heading_text = String::new();
+    let mut current_section: Option<usize> = None;
+    let mut validation_table: Option<ValidationTable> = None;
+    let mut in_table_cell = false;
+    let mut directive_pending = 0usize;
+    let mut last_event_location = BodyLocation {
+        line: first_line,
+        column: 1,
+    };
+
     for (event, range) in parser.into_offset_iter() {
+        let event_location = body_location(&line_index, range.start, first_line);
+        last_event_location = event_location;
+        if directive_pending > 0
+            && !matches!(
+                event,
+                Event::Start(Tag::Heading {
+                    level: HeadingLevel::H2,
+                    ..
+                }) | Event::Html(_)
+                    | Event::InlineHtml(_)
+                    | Event::End(TagEnd::HtmlBlock)
+                    | Event::Start(Tag::HtmlBlock)
+                    | Event::SoftBreak
+                    | Event::HardBreak
+            )
+        {
+            diagnostics.push(with_body_location(
+                diagnostic(
+                    codes::HTML001,
+                    "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
+                ),
+                event_location,
+            ));
+            directive_pending = 0;
+        }
         match event {
-            Event::Start(Tag::Heading {
-                level: HeadingLevel::H2,
-                ..
-            }) => heading = Some((String::new(), range.start)),
-            Event::Text(value) | Event::Code(value) => {
-                if let Some((title, _)) = heading.as_mut() {
-                    title.push_str(&value);
+            Event::Start(Tag::Heading { level, .. }) => {
+                if level == HeadingLevel::H2 {
+                    heading = Some((String::new(), range.start));
+                    if directive_pending > 0 {
+                        directive_pending = 0;
+                    }
                 }
-                if let Some((cell_text, _)) = current_cell.as_mut() {
-                    cell_text.push_str(&value);
-                }
+                heading_level = Some(level);
+                heading_text.clear();
             }
-            Event::End(TagEnd::Heading(HeadingLevel::H2)) => {
-                if let Some((title, start)) = heading.take() {
-                    let span = span_from_offsets(body, first_line, start, range.end);
+            Event::End(TagEnd::Heading(level)) => {
+                if level == HeadingLevel::H1 {
+                    diagnostics.push(with_body_location(
+                        diagnostic(codes::MARKDOWN001, "H1 headings are not allowed"),
+                        event_location,
+                    ));
+                } else if level == HeadingLevel::H2 {
+                    let (title, start) = heading.take().unwrap_or((String::new(), range.start));
+                    let title = title.trim().to_owned();
+                    let span = span_from_offsets(&line_index, first_line, start, range.end);
                     sections.push(DocumentSection {
-                        title: title.trim().to_owned(),
+                        title: title.clone(),
                         body: DocumentSectionBody::Prose {
                             text: String::new(),
                             span,
                         },
                         span,
                     });
+                    if title.is_empty() {
+                        diagnostics.push(with_body_location(
+                            diagnostic(codes::MARKDOWN001, "H2 heading cannot be empty"),
+                            event_location,
+                        ));
+                    } else {
+                        validation_sections.push(ValidationSection {
+                            title,
+                            tables: 0,
+                            financial_tables: 0,
+                            second_table_start: None,
+                        });
+                        current_section = Some(validation_sections.len() - 1);
+                    }
+                }
+                heading_level = None;
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if heading_level.is_some() {
+                    heading_text.push_str(&text);
+                }
+                if let Some((title, _)) = heading.as_mut() {
+                    title.push_str(&text);
+                }
+                if let Some((cell_text, _)) = current_cell.as_mut() {
+                    cell_text.push_str(&text);
                 }
             }
             Event::Start(Tag::Table(_)) => {
+                if let Some(section_index) = current_section {
+                    validation_sections[section_index].tables += 1;
+                    if validation_sections[section_index].tables == 2 {
+                        validation_sections[section_index].second_table_start =
+                            Some(event_location);
+                    }
+                    validation_table = Some(ValidationTable {
+                        heading_cells: 0,
+                        body_rows: 0,
+                        headings: Vec::new(),
+                        rows: Vec::new(),
+                        section_index,
+                        start: event_location,
+                    });
+                }
                 if let Some(index) = sections.len().checked_sub(1) {
                     active_table = Some((
                         index,
                         DocumentTable {
                             headings: Vec::new(),
                             rows: Vec::new(),
-                            span: span_from_offsets(body, first_line, range.start, range.end),
+                            span: span_from_offsets(
+                                &line_index,
+                                first_line,
+                                range.start,
+                                range.end,
+                            ),
                         },
                     ));
                 }
             }
-            Event::Start(Tag::TableHead) => in_head = true,
-            Event::End(TagEnd::TableHead) => in_head = false,
+            Event::Start(Tag::TableHead) => {
+                in_head = true;
+                if let Some(active) = validation_table.as_mut() {
+                    active.headings.clear();
+                }
+            }
+            Event::End(TagEnd::TableHead) => {
+                in_head = false;
+            }
             Event::Start(Tag::TableRow) => {
                 active_row = Some((0, Vec::new(), range.start));
+                if !in_head {
+                    if let Some(active) = validation_table.as_mut() {
+                        active.rows.push((0, event_location));
+                    }
+                }
             }
             Event::Start(Tag::TableCell) => {
                 current_cell = Some((String::new(), range.start));
+                in_table_cell = true;
+                if let Some(active) = validation_table.as_mut() {
+                    if in_head {
+                        active.heading_cells += 1;
+                        active.headings.push(String::new());
+                    } else if let Some((cells, _)) = active.rows.last_mut() {
+                        *cells += 1;
+                    }
+                }
+                if let Some((cells, _, _)) = active_row.as_mut() {
+                    if !in_head {
+                        *cells += 1;
+                    }
+                }
             }
             Event::End(TagEnd::TableCell) => {
+                in_table_cell = false;
+                let cell_text = current_cell.as_ref().map(|(text, _)| text.clone());
                 if let Some((text, start)) = current_cell.take() {
                     let row_index = active_table
                         .as_ref()
@@ -477,7 +663,7 @@ fn document_sections(body: &str, first_line: usize) -> Vec<DocumentSection> {
                     let cell = DocumentCell {
                         text,
                         path,
-                        span: span_from_offsets(body, first_line, start, range.end),
+                        span: span_from_offsets(&line_index, first_line, start, range.end),
                     };
                     if in_head {
                         if let Some((_, table)) = active_table.as_mut() {
@@ -485,6 +671,14 @@ fn document_sections(body: &str, first_line: usize) -> Vec<DocumentSection> {
                         }
                     } else if let Some((_, cells, _)) = active_row.as_mut() {
                         cells.push(cell);
+                    }
+                }
+                if in_head {
+                    if let (Some(active), Some(cell_text)) = (validation_table.as_mut(), cell_text)
+                    {
+                        if let Some(heading) = active.headings.last_mut() {
+                            *heading = cell_text;
+                        }
                     }
                 }
             }
@@ -497,30 +691,119 @@ fn document_sections(body: &str, first_line: usize) -> Vec<DocumentSection> {
                         if let Some((_, table)) = active_table.as_mut() {
                             table.rows.push(DocumentRow {
                                 cells,
-                                span: span_from_offsets(body, first_line, start, range.end),
+                                span: span_from_offsets(&line_index, first_line, start, range.end),
                             });
                             let _ = row_index;
                         }
                     }
                 }
+                if !in_head {
+                    if let Some(active) = validation_table.as_mut() {
+                        active.body_rows += 1;
+                        if let Some((width, _)) = active.rows.last_mut() {
+                            *width = split_table_cells(&body[range.start..range.end]).len();
+                        }
+                    }
+                }
             }
             Event::End(TagEnd::Table) => {
+                if let Some(active) = validation_table.take() {
+                    if active.heading_cells < 2 {
+                        let mut item = with_body_location(
+                            diagnostic(codes::TABLE001, Code::Table001.default_message()),
+                            active.start,
+                        );
+                        item.section =
+                            Some(validation_sections[active.section_index].title.clone());
+                        item.section_index = Some((active.section_index + 1) as u32);
+                        diagnostics.push(item);
+                    }
+                    if active.body_rows == 0 {
+                        let mut item = with_body_location(
+                            diagnostic(codes::TABLE002, Code::Table002.default_message()),
+                            active.start,
+                        );
+                        item.section =
+                            Some(validation_sections[active.section_index].title.clone());
+                        item.section_index = Some((active.section_index + 1) as u32);
+                        diagnostics.push(item);
+                    }
+                    if active
+                        .headings
+                        .iter()
+                        .any(|heading| is_amount_heading(heading))
+                    {
+                        validation_sections[active.section_index].financial_tables += 1;
+                    }
+                    for (row, (actual, location)) in active.rows.into_iter().enumerate() {
+                        if actual != active.heading_cells {
+                            let column_index = actual.min(active.heading_cells);
+                            width_issues.push(WidthIssue {
+                                expected: active.heading_cells,
+                                actual,
+                                line: location.line,
+                                section_index: active.section_index,
+                                row: row + 1,
+                                column_name: active.headings.get(column_index).cloned(),
+                            });
+                        }
+                    }
+                }
                 if let Some((index, table)) = active_table.take() {
-                    let table_span = span_from_offsets(body, first_line, range.start, range.end);
+                    let table_span =
+                        span_from_offsets(&line_index, first_line, range.start, range.end);
                     sections[index].body = DocumentSectionBody::Table(DocumentTable {
                         span: table_span,
                         ..table
                     });
                 }
             }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                let literal = html.as_ref();
+                let directive = literal.trim_end_matches(['\r', '\n'])
+                    == "<!-- ttyinv:page-break-before -->"
+                    || literal.trim_end_matches(['\r', '\n']) == "<!-- ttyinv:summary-only -->";
+                if directive {
+                    directive_pending += 1;
+                } else if !(in_table_cell && literal == "<br>") {
+                    diagnostics.push(with_body_location(
+                        diagnostic(
+                            codes::HTML001,
+                            "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
+                        ),
+                        event_location,
+                    ));
+                    directive_pending = 0;
+                }
+            }
             _ => {}
         }
     }
-    sections
+    if directive_pending > 0 {
+        diagnostics.push(with_body_location(
+            diagnostic(
+                codes::HTML001,
+                "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
+            ),
+            last_event_location,
+        ));
+    }
+    ParsedMarkdown {
+        sections,
+        validation_sections,
+        diagnostics,
+        width_issues,
+        first_body_location: first_body_location(&line_index, body, first_line),
+    }
 }
-fn span_from_offsets(body: &str, first_line: usize, start: usize, end: usize) -> SourceSpan {
-    let start = body_location(body, start, first_line);
-    let end = body_location(body, end, first_line);
+fn span_from_offsets(
+    line_index: &LineIndex,
+    first_line: usize,
+    start: usize,
+    end: usize,
+) -> SourceSpan {
+    let start = body_location(line_index, start, first_line);
+    let end = body_location(line_index, end, first_line);
     SourceSpan {
         start: SourcePosition {
             line: start.line,
@@ -676,7 +959,8 @@ pub fn validate(source: &str) -> ValidationReport {
     };
 
     let mut diagnostics = validate_frontmatter(&frontmatter, &locations);
-    diagnostics.extend(validate_markdown(parts.body, parts.body_line));
+    let parsed = parse_markdown(parts.body, parts.body_line);
+    diagnostics.extend(validate_markdown(parsed));
     finish_diagnostics(diagnostics)
 }
 
@@ -1014,237 +1298,34 @@ fn validate_date(
     }
 }
 
-#[derive(Default)]
-struct Section {
-    title: String,
-    tables: usize,
-    financial_tables: usize,
-    second_table_start: Option<BodyLocation>,
-}
-
-struct TableState {
-    heading_cells: usize,
-    body_rows: usize,
-    row_cells: usize,
-    in_head: bool,
-    headings: Vec<String>,
-    current_cell: String,
-    row_widths: Vec<usize>,
-    section_index: usize,
-    start: BodyLocation,
-}
-
-// This walk validates tables and must agree with document_sections.
-// Keep document_sections as the future shared table parser.
-fn validate_markdown(body: &str, first_line: usize) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
-    let mut sections: Vec<Section> = Vec::new();
-    let mut current_section: Option<usize> = None;
-    let mut heading_level: Option<HeadingLevel> = None;
-    let mut heading_text = String::new();
-    let mut table: Option<TableState> = None;
-    let mut in_table_cell = false;
-    let mut directive_pending = 0usize;
-    let mut last_event_location = BodyLocation {
-        line: first_line,
-        column: 1,
-    };
-    let parser = Parser::new_ext(body, Options::ENABLE_TABLES);
-
-    for (event, range) in parser.into_offset_iter() {
-        let event_location = body_location(body, range.start, first_line);
-        last_event_location = event_location;
-        if directive_pending > 0
-            && !matches!(
-                event,
-                Event::Start(Tag::Heading {
-                    level: HeadingLevel::H2,
-                    ..
-                }) | Event::Html(_)
-                    | Event::InlineHtml(_)
-                    | Event::End(TagEnd::HtmlBlock)
-                    | Event::Start(Tag::HtmlBlock)
-                    | Event::SoftBreak
-                    | Event::HardBreak
-            )
-        {
-            diagnostics.push(with_body_location(
-                diagnostic(
-                    codes::HTML001,
-                    "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
-                ),
-                event_location,
-            ));
-            directive_pending = 0;
-        }
-        match event {
-            Event::Start(Tag::Heading { level, .. }) => {
-                if level == HeadingLevel::H2 && directive_pending > 0 {
-                    directive_pending = 0;
-                }
-                heading_level = Some(level);
-                heading_text.clear();
-            }
-            Event::End(TagEnd::Heading(level)) => {
-                if level == HeadingLevel::H1 {
-                    diagnostics.push(with_body_location(
-                        diagnostic(codes::MARKDOWN001, "H1 headings are not allowed"),
-                        event_location,
-                    ));
-                } else if level == HeadingLevel::H2 {
-                    if heading_text.trim().is_empty() {
-                        diagnostics.push(with_body_location(
-                            diagnostic(codes::MARKDOWN001, "H2 heading cannot be empty"),
-                            event_location,
-                        ));
-                    } else {
-                        sections.push(Section {
-                            title: heading_text.trim().to_owned(),
-                            tables: 0,
-                            financial_tables: 0,
-                            second_table_start: None,
-                        });
-                        current_section = Some(sections.len() - 1);
-                    }
-                }
-                heading_level = None;
-            }
-            Event::Text(text) | Event::Code(text) => {
-                if heading_level.is_some() {
-                    heading_text.push_str(&text);
-                }
-                if let Some(active) = table.as_mut() {
-                    if in_table_cell {
-                        active.current_cell.push_str(&text);
-                    }
-                }
-            }
-            Event::Start(Tag::Table(_)) => {
-                if let Some(section_index) = current_section {
-                    sections[section_index].tables += 1;
-                    if sections[section_index].tables == 2 {
-                        sections[section_index].second_table_start = Some(event_location);
-                    }
-                    table = Some(TableState {
-                        heading_cells: 0,
-                        body_rows: 0,
-                        row_cells: 0,
-                        in_head: false,
-                        headings: Vec::new(),
-                        current_cell: String::new(),
-                        row_widths: Vec::new(),
-                        section_index,
-                        start: event_location,
-                    });
-                }
-            }
-            Event::Start(Tag::TableHead) => {
-                if let Some(active) = table.as_mut() {
-                    active.in_head = true;
-                }
-            }
-            Event::End(TagEnd::TableHead) => {
-                if let Some(active) = table.as_mut() {
-                    active.in_head = false;
-                }
-            }
-            Event::Start(Tag::TableRow) => {
-                if let Some(active) = table.as_mut() {
-                    active.row_cells = 0;
-                    active.current_cell.clear();
-                }
-            }
-            Event::End(TagEnd::TableRow) => {
-                if let Some(active) = table.as_mut() {
-                    active.row_widths.push(active.row_cells);
-                    if active.in_head {
-                        active.headings.push(active.current_cell.clone());
-                    } else {
-                        active.body_rows += 1;
-                    }
-                    active.current_cell.clear();
-                }
-            }
-            Event::Start(Tag::TableCell) => {
-                if let Some(active) = table.as_mut() {
-                    if active.in_head {
-                        active.heading_cells += 1;
-                    } else {
-                        active.row_cells += 1;
-                    }
-                    active.current_cell.clear();
-                }
-                in_table_cell = true;
-            }
-            Event::End(TagEnd::TableCell) => {
-                in_table_cell = false;
-                if let Some(active) = table.as_mut() {
-                    if active.in_head {
-                        active.headings.push(active.current_cell.clone());
-                    }
-                }
-            }
-            Event::End(TagEnd::Table) => {
-                if let Some(active) = table.take() {
-                    if active.heading_cells < 2 {
-                        let mut item = with_body_location(
-                            diagnostic(codes::TABLE001, Code::Table001.default_message()),
-                            active.start,
-                        );
-                        item.section = Some(sections[active.section_index].title.clone());
-                        item.section_index = Some((active.section_index + 1) as u32);
-                        diagnostics.push(item);
-                    }
-                    if active.body_rows == 0 {
-                        let mut item = with_body_location(
-                            diagnostic(codes::TABLE002, Code::Table002.default_message()),
-                            active.start,
-                        );
-                        item.section = Some(sections[active.section_index].title.clone());
-                        item.section_index = Some((active.section_index + 1) as u32);
-                        diagnostics.push(item);
-                    }
-                    let financial = active
-                        .headings
-                        .iter()
-                        .any(|heading| is_amount_heading(heading));
-                    if financial {
-                        sections[active.section_index].financial_tables += 1;
-                    }
-                }
-            }
-            Event::Html(html) | Event::InlineHtml(html) => {
-                let literal = html.as_ref();
-                let directive = literal.trim_end_matches(['\r', '\n'])
-                    == "<!-- ttyinv:page-break-before -->"
-                    || literal.trim_end_matches(['\r', '\n']) == "<!-- ttyinv:summary-only -->";
-                if directive {
-                    directive_pending += 1;
-                } else if !(in_table_cell && literal == "<br>") {
-                    diagnostics.push(with_body_location(
-                        diagnostic(
-                            codes::HTML001,
-                            "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
-                        ),
-                        event_location,
-                    ));
-                    directive_pending = 0;
-                }
-            }
-            _ => {}
-        }
-    }
-    if directive_pending > 0 {
-        diagnostics.push(with_body_location(
+fn validate_markdown(parsed: ParsedMarkdown) -> Vec<Diagnostic> {
+    let mut diagnostics = parsed.diagnostics;
+    for issue in &parsed.width_issues {
+        let mut item = with_body_location(
             diagnostic(
-                codes::HTML001,
-                "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
+                codes::TABLE003,
+                format!(
+                    "table row has {} cells; expected {}",
+                    issue.actual, issue.expected
+                ),
             ),
-            last_event_location,
-        ));
+            BodyLocation {
+                line: issue.line,
+                column: 1,
+            },
+        );
+        item.section = Some(
+            parsed.validation_sections[issue.section_index]
+                .title
+                .clone(),
+        );
+        item.section_index = Some((issue.section_index + 1) as u32);
+        item.row = Some(issue.row);
+        item.column_name = issue.column_name.clone();
+        diagnostics.push(item);
     }
-    validate_raw_table_widths(body, first_line, &mut diagnostics);
-    let financial_table_count: usize = sections
+    let financial_table_count: usize = parsed
+        .validation_sections
         .iter()
         .map(|section| section.financial_tables)
         .sum();
@@ -1254,25 +1335,25 @@ fn validate_markdown(body: &str, first_line: usize) -> Vec<Diagnostic> {
                 codes::MARKDOWN002,
                 "invoice must contain at least one financial table",
             ),
-            first_body_location(body, first_line),
+            parsed.first_body_location,
         ));
     }
-    if sections.is_empty() {
+    if parsed.validation_sections.is_empty() {
         diagnostics.push(with_body_location(
             warning(
                 codes::MARKDOWN003,
                 "invoice must contain at least one H2 section",
             ),
-            first_body_location(body, first_line),
+            parsed.first_body_location,
         ));
     }
-    for (section_index, section) in sections.iter().enumerate() {
+    for (section_index, section) in parsed.validation_sections.iter().enumerate() {
         if section.financial_tables > 0 && section.tables > 1 {
             let mut item = with_body_location(
                 diagnostic(codes::TABLE004, Code::Table004.default_message()),
                 section
                     .second_table_start
-                    .unwrap_or_else(|| first_body_location(body, first_line)),
+                    .unwrap_or(parsed.first_body_location),
             );
             item.section = Some(section.title.clone());
             item.section_index = Some((section_index + 1) as u32);
@@ -1281,19 +1362,13 @@ fn validate_markdown(body: &str, first_line: usize) -> Vec<Diagnostic> {
     }
     diagnostics
 }
-
-fn body_location(body: &str, offset: usize, first_line: usize) -> BodyLocation {
-    let prefix = &body[..offset.min(body.len())];
-    let line = first_line + prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let column = prefix
-        .rsplit_once('\n')
-        .map_or(prefix.len() + 1, |(_, current)| current.len() + 1);
-    BodyLocation { line, column }
+fn body_location(line_index: &LineIndex, offset: usize, first_line: usize) -> BodyLocation {
+    line_index.location(offset, first_line)
 }
 
-fn first_body_location(body: &str, first_line: usize) -> BodyLocation {
+fn first_body_location(line_index: &LineIndex, body: &str, first_line: usize) -> BodyLocation {
     body_location(
-        body,
+        line_index,
         body.find(|character: char| !character.is_whitespace())
             .unwrap_or(0),
         first_line,
@@ -1313,94 +1388,6 @@ fn is_amount_heading(value: &str) -> bool {
     };
     currency.len() == 3 && currency.bytes().all(|byte| byte.is_ascii_alphabetic())
 }
-
-fn validate_raw_table_widths(body: &str, first_line: usize, diagnostics: &mut Vec<Diagnostic>) {
-    let lines: Vec<&str> = body.lines().collect();
-    let mut section = 0;
-    let mut section_title = String::new();
-    let mut seen_h2 = false;
-    let mut fence: Option<&str> = None;
-    let mut index = 0;
-    while index + 1 < lines.len() {
-        let raw_line = lines[index];
-        let line = raw_line.trim();
-        if let Some(marker) = fence {
-            if line.starts_with(marker) {
-                fence = None;
-            }
-            index += 1;
-            continue;
-        }
-        if line.starts_with("```") {
-            fence = Some("```");
-            index += 1;
-            continue;
-        }
-        if line.starts_with("~~~") {
-            fence = Some("~~~");
-            index += 1;
-            continue;
-        }
-        if line.starts_with("## ") && !line.starts_with("### ") {
-            seen_h2 = true;
-            section += 1;
-            section_title = line[3..].trim().to_owned();
-            index += 1;
-            continue;
-        }
-        if seen_h2 && line.contains('|') && is_separator_row(lines[index + 1]) {
-            let headers = split_table_cells(line);
-            let expected = headers.len();
-            let mut row_index = index + 2;
-            let mut row = 1;
-            while row_index < lines.len() {
-                let raw_row = lines[row_index];
-                let row_text = raw_row.trim();
-                if row_text.is_empty() || row_text.starts_with("## ") || !row_text.contains('|') {
-                    break;
-                }
-                let actual = split_table_cells(row_text).len();
-                if actual != expected {
-                    let column_index = actual.min(expected);
-                    let column_name = headers
-                        .get(column_index)
-                        .filter(|value| !value.is_empty())
-                        .cloned();
-                    let mut item = with_body_location(
-                        diagnostic(
-                            codes::TABLE003,
-                            format!("table row has {actual} cells; expected {expected}"),
-                        ),
-                        BodyLocation {
-                            line: first_line + row_index,
-                            column: 1,
-                        },
-                    );
-                    item.section = Some(section_title.clone());
-                    item.section_index = Some(section as u32);
-                    item.row = Some(row);
-                    item.column_name = column_name;
-                    diagnostics.push(item);
-                }
-                row += 1;
-                row_index += 1;
-            }
-            index = row_index;
-            continue;
-        }
-        index += 1;
-    }
-}
-
-fn is_separator_row(line: &str) -> bool {
-    let cells = split_table_cells(line);
-    !cells.is_empty()
-        && cells.iter().all(|cell| {
-            let value = cell.trim().trim_matches(':').trim();
-            value.len() >= 3 && value.bytes().all(|byte| byte == b'-')
-        })
-}
-
 fn split_table_cells(line: &str) -> Vec<String> {
     let mut value = line.trim();
     if let Some(stripped) = value.strip_prefix('|') {
@@ -1432,7 +1419,89 @@ fn split_table_cells(line: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
+    #[test]
+    fn line_index_preserves_byte_columns_across_unicode_and_newlines() {
+        let body = "α\nbeta\n\néx";
+        let index = LineIndex::new(body);
+        assert_eq!(index.starts, vec![0, 3, 8, 9]);
+        for (offset, expected) in [
+            (
+                0,
+                BodyLocation {
+                    line: 10,
+                    column: 1,
+                },
+            ),
+            (
+                2,
+                BodyLocation {
+                    line: 10,
+                    column: 3,
+                },
+            ),
+            (
+                3,
+                BodyLocation {
+                    line: 11,
+                    column: 1,
+                },
+            ),
+            (
+                7,
+                BodyLocation {
+                    line: 11,
+                    column: 5,
+                },
+            ),
+            (
+                8,
+                BodyLocation {
+                    line: 12,
+                    column: 1,
+                },
+            ),
+            (
+                9,
+                BodyLocation {
+                    line: 13,
+                    column: 1,
+                },
+            ),
+            (
+                12,
+                BodyLocation {
+                    line: 13,
+                    column: 4,
+                },
+            ),
+        ] {
+            assert_eq!(body_location(&index, offset, 10), expected);
+        }
+    }
+
+    #[test]
+    fn line_index_scales_structurally_with_body_lines() {
+        let rows = 10_000;
+        let body = "row\n".repeat(rows);
+        let index = LineIndex::new(&body);
+        assert_eq!(index.starts.len(), rows + 1);
+        assert_eq!(
+            body_location(&index, (rows / 2) * 4, 7),
+            BodyLocation {
+                line: 7 + rows / 2,
+                column: 1
+            }
+        );
+        assert_eq!(
+            body_location(&index, body.len(), 7),
+            BodyLocation {
+                line: 7 + rows,
+                column: 1
+            }
+        );
+    }
 
     fn source(frontmatter: &str, body: &str) -> String {
         format!("---\n{frontmatter}\n---\n{body}")
@@ -1670,6 +1739,22 @@ mod tests {
             validate(&fenced).is_valid(),
             "{:?}",
             validate(&fenced).diagnostics()
+        );
+        let indented = source(
+            valid_frontmatter(),
+            "\n## Services\n\n| One | Amount |\n| --- | --- |\n| x | 1 |\n\n    | One | Amount |\n    | --- | --- |\n    | x | 1 | extra |\n",
+        );
+        let indented_report = validate(&indented);
+        assert!(
+            indented_report.is_valid(),
+            "{:?}",
+            indented_report.diagnostics()
+        );
+        assert!(
+            indented_report
+                .diagnostics()
+                .iter()
+                .all(|item| item.code != codes::TABLE003)
         );
 
         let h1 = source(

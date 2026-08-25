@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/cli", "crates/ttyinv-core"]
+members = ["apps/cli", "crates/ttyinv-core", "crates/ttyinv-wasm"]
 resolver = "2"
 
 [workspace.package]

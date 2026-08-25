@@ -224,72 +224,7 @@ fn write_diagnostic_text(diagnostic: &Diagnostic) -> Result<(), ()> {
     Ok(())
 }
 
-fn diagnostic_json(diagnostic: &Diagnostic) -> serde_json::Value {
-    // Optional diagnostic fields are omitted instead of being encoded as null.
-    let mut object = serde_json::Map::new();
-    object.insert(
-        "severity".to_owned(),
-        serde_json::Value::String(match diagnostic.severity {
-            Severity::Error => "error".to_owned(),
-            Severity::Warning => "warning".to_owned(),
-        }),
-    );
-    object.insert(
-        "code".to_owned(),
-        serde_json::Value::String(diagnostic.code.clone()),
-    );
-    object.insert(
-        "message".to_owned(),
-        serde_json::Value::String(diagnostic.message.clone()),
-    );
-    insert_optional_string(&mut object, "path", diagnostic.path.as_deref());
-    insert_optional_string(&mut object, "field_path", diagnostic.field_path.as_deref());
-    insert_optional_number(&mut object, "line", diagnostic.line);
-    insert_optional_number(&mut object, "column", diagnostic.column);
-    insert_optional_string(&mut object, "hint", diagnostic.hint.as_deref());
-    insert_optional_string(&mut object, "section", diagnostic.section.as_deref());
-    insert_optional_u32(&mut object, "section_index", diagnostic.section_index);
-    insert_optional_number(&mut object, "row", diagnostic.row);
-    insert_optional_string(
-        &mut object,
-        "column_name",
-        diagnostic.column_name.as_deref(),
-    );
-    serde_json::Value::Object(object)
-}
-
-fn insert_optional_string(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: Option<&str>,
-) {
-    if let Some(value) = value {
-        object.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
-    }
-}
-
-fn insert_optional_number(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: Option<usize>,
-) {
-    if let Some(value) = value {
-        object.insert(key.to_owned(), serde_json::Value::from(value));
-    }
-}
-
-fn insert_optional_u32(
-    object: &mut serde_json::Map<String, serde_json::Value>,
-    key: &str,
-    value: Option<u32>,
-) {
-    if let Some(value) = value {
-        object.insert(key.to_owned(), serde_json::Value::from(value));
-    }
-}
-
 fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: i32) -> i32 {
-    let diagnostics = diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>();
     let value = serde_json::json!({
         "valid": valid,
         "diagnostics": diagnostics,
