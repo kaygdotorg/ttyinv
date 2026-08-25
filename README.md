@@ -16,8 +16,8 @@ The CLI is intentionally **an invoice renderer, not an invoice-management system
 - light, print-friendly A4 output by default, with a geometry-identical dark theme;
 - self-contained HTML with CSS, selected fonts, logos, and signatures embedded;
 - Playwright/Chromium PDF output from the same HTML renderer;
-- automatic decimal-safe line amounts, section totals, and total due;
-- explicit amount support with safe mismatch handling;
+- compatibility renderer: automatic decimal-safe line amounts, section totals, and total due;
+- compatibility renderer: explicit amount support with safe mismatch handling;
 - one payable currency plus informational source-currency columns;
 - typed Payment, settlement, and signature sections;
 - exact outer-page frame geometry and borderless tables aligned to a common column grid;
@@ -64,7 +64,7 @@ The source repository does not casually commit font binaries. `make visual` obta
 
 The Rust CLI provides the local validation slice. It does not render invoices yet. Rust rendering is planned.
 
-The planned Rust PDF path will use `pdf_oxide`, subject to determinism and WebAssembly validation.
+The planned Rust PDF path will use `krilla` 0.8.2. It measured byte-deterministic in-process and across processes. The rejected alternative failed that test and could not pin document identifiers.
 
 One Rust engine owns every invoice rule. The native CLI, WebAssembly, REST, and MCP surfaces are adapters to that engine. The Python and TypeScript engines are temporary references pending deletion.
 
@@ -127,6 +127,7 @@ invoice:
   number: INV-2026-001
   title: Consulting services
   issued: 2026-01-15
+  currency: EUR
   due: 2026-01-29
   locale: en-GB
 
@@ -172,9 +173,13 @@ Payment is due within fourteen days.
 
 Every H2 followed by a GFM table becomes a titled invoice section. H2 prose sections, such as Notes, remain prose. `<br>` inside a table cell creates the reference design's primary line plus muted detail line.
 
+The v1 schema accepts optional `invoice.kind` with `standard` or `gst`. It rejects `invoice.reference`, `logo_alt`, and signature `alt`. It rejects authored `appearance.theme`. `appearance.font` is an object with optional `family`, `regular`, and `bold` fields. `appearance.rule` is supported. `payment.pageBreakBefore` is supported.
+
 ## Calculations and explicit amounts
 
-For recognized quantity and rate columns, a blank or `auto` amount means:
+The Python compatibility renderer currently enforces the documented money rules. Rust support is planned. The Rust `validate` command does not parse quantity, rate, or amount cells. It accepts incomplete `auto`, non-numeric amount cells, and explicit mismatches.
+
+For the planned Rust rules, a blank or `auto` amount uses recognized quantity and rate columns:
 
 ```text
 line amount = quantity × unit price
@@ -182,21 +187,21 @@ line amount = quantity × unit price
 
 Recognized quantity aliases include `Qty`, `Quantity`, `Days`, `Hours`, and `Units`. Recognized price aliases include `Rate`, `Unit price`, and `Price`.
 
-An explicit amount is accepted when it matches the calculation. A mismatch fails by default:
+The planned Rust adapter flags are mutually exclusive:
 
 ```console
-ttyinv invoice.md
-# invoice.md:… error[SCHEMA001]: unknown frontmatter field 'foo'
+ttyinv invoice.md --trust-explicit  # planned Rust option
+ttyinv invoice.md --recalculate     # planned Rust option
 ```
 
-Two mutually exclusive escape hatches are available:
+The Rust adapter currently rejects both flags. The Python compatibility renderer supports them today.
+
+Current Rust validation example:
 
 ```console
-ttyinv invoice.md --trust-explicit  # use the written amount
-ttyinv invoice.md --recalculate     # ignore written calculable amounts
+ttyinv validate invoice.md
+# invoice.md: error[SCHEMA003]: invoice.currency is required
 ```
-
-This supports negotiated amounts, reimbursements, conversion adjustments, credits, and deliberate rounding without allowing accidental arithmetic drift silently.
 
 ## Multi-currency
 
@@ -271,7 +276,7 @@ ttyinv lint invoice.md --strict
 ttyinv lint invoice.md --json
 ```
 
-Linting checks:
+The compatibility renderer's lint checks:
 
 - YAML syntax, duplicate keys, and required schema fields;
 - Markdown table shape and source line numbers;
@@ -281,7 +286,9 @@ Linting checks:
 - path traversal outside the invoice directory;
 - basic palette contrast.
 
-Diagnostics use `severity`, `code`, `message`, `path`, `line`, `column`, `hint`, `section`, `row`, and `column_name`. Structured output contains all ten fields. Optional fields are `null` when they do not apply. Warnings print and leave the document valid. See [`SPEC.md`](SPEC.md) for the complete diagnostic taxonomy.
+The Rust `validate` command does not parse quantity, rate, or amount cells. See [`SPEC.md`](SPEC.md) for the planned Rust money rules.
+
+Diagnostics use twelve fields: `severity`, `code`, `message`, `path`, `field_path`, `line`, `column`, `hint`, `section`, `section_index`, `row`, and `column_name`. Optional JSON fields are omitted when they do not apply; they are not emitted as `null`. `field_path` uses the canvas path grammar. Warnings print and leave the document valid. The Rust adapter also emits `INPUT001` for unreadable or non-UTF-8 input and `INPUT002` when input exceeds `MAX_SOURCE_BYTES`.
 
 Verify linked local documents too:
 

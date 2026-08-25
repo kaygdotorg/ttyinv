@@ -36,9 +36,14 @@ H1 is not part of the invoice grammar. The renderer supplies the invoice title f
 
 ```yaml
 schema: ttyinv/v1
-invoice: {}
-from: {}
-to: {}
+invoice:
+  number: INV-2026-001
+  issued: 2026-01-15
+  currency: EUR
+from:
+  name: Northstar Studio
+to:
+  name: Acme Research Ltd
 ```
 
 Unknown root keys are errors unless a later compatible v1 revision explicitly defines them.
@@ -68,11 +73,18 @@ Optional:
 
 ```yaml
   title: Consulting services
+  kind: standard
   due: 2026-01-29
   locale: en-GB
-  reference: PROJECT-EXAMPLE
   terms: Net 14
 ```
+
+`reference` is not a v1 field. An `invoice.reference` field is rejected as unknown.
+
+`kind` is optional. Its values are `standard` and `gst`.
+
+`standard` renders the invoice total in words. `gst` also renders the received settlement amount in words.
+
 
 Rules:
 
@@ -80,7 +92,9 @@ Rules:
 - `currency` is one uppercase three-letter code;
 - the invoice currency is the payable currency;
 - `locale` controls money and decimal formatting only;
-- `number`, `reference`, and `terms` are text, not numbers.
+- `number`, `terms`, and `title` are text, not numbers;
+- `kind` is `standard` or `gst` when supplied.
+
 
 ### 2.4 Parties
 
@@ -98,16 +112,16 @@ from:
   email: billing@example.com
   website: https://example.com
   logo: ./assets/logo.svg
-  logo_alt: Northstar Studio mark
 ```
 
-Only `name` is required. `address` is an ordered list. `identifiers` is an ordered label/value mapping displayed as authored. `logo` is a local asset path resolved under the path rules in section 8.
+Only `name` is required. `address` is an ordered list. `identifiers` is an ordered label/value mapping displayed as authored. `logo` is a local asset path resolved under the path rules in section 8. `logo_alt` is not a v1 field and is rejected as unknown. Authored logo alternative text is a v2 candidate.
 
 ### 2.5 Payment methods
 
 ```yaml
 payment:
   title: Payment
+  pageBreakBefore: false
   methods:
     - title: Bank transfer
       fields:
@@ -115,8 +129,7 @@ payment:
         Reference: INV-2026-001
         Instructions: Contact billing@example.com for transfer details
 ```
-
-Payment fields are generic label/value pairs. The core schema does not interpret an IBAN, routing number, UPI handle, payment URL, or other payment rail. Payment renders in its own terminal-style frame near the closing edge of the final page.
+`title`, `methods`, and `pageBreakBefore` are optional. `pageBreakBefore` requests a page break before the Payment section. Payment fields are generic label/value pairs. The core schema does not interpret an IBAN, routing number, UPI handle, payment URL, or other payment rail. Payment renders in its own terminal-style frame near the closing edge of the final page.
 
 ### 2.6 Settlement records
 
@@ -142,10 +155,9 @@ signature:
   image: ./assets/signature.svg
   name: Example Person
   label: Authorized signature
-  alt: Signature of Example Person
 ```
 
-The image is embedded in self-contained HTML. The signature block follows Payment. Signature images are optional and must never be committed to the public repository when they identify a real person.
+The image is embedded in self-contained HTML. The signature block follows Payment. Signature images are optional and must never be committed to the public repository when they identify a real person. Signature `alt` is not a v1 field and is rejected as unknown. Authored signature alternative text is a v2 candidate.
 
 ### 2.8 Appearance
 
@@ -153,17 +165,19 @@ Portable documents may request supported appearance values:
 
 ```yaml
 appearance:
-  theme: light
-  font: Geist Mono
+  font:
+    family: Geist Mono
+    regular: ./assets/geist-mono-regular.woff2
+    bold: ./assets/geist-mono-bold.woff2
   accent: "#50a6ed"
   paper: "#ffffff"
   ink: "#161618"
   muted: "#68686f"
+  rule: "#303038"
   density: comfortable
 ```
 
-CLI flags take precedence. `font` must resolve to an installed or bundled monospace font. Colors must pass the safe CSS color parser. `density` is `comfortable` or `compact`; it must not alter calculations or page size.
-
+`theme` is not a v1 authored field and is rejected as unknown. Select the render theme with the `--theme` option. `font` is an object with optional `family`, `regular`, and `bold` strings. `rule` is the optional rule color. CLI flags take precedence. A font must resolve to an installed or bundled monospace font. Colors must pass the safe CSS color parser. `density` is `comfortable` or `compact`; it must not alter calculations or page size.
 ## 3. Sections
 
 A level-two heading defines one named section:
@@ -256,34 +270,36 @@ The renderer derives a deterministic `<colgroup>` from semantic headings. Descri
 
 ## 5. Money and calculations
 
+These rules are planned for the Rust engine. The current Rust `validate` command does not parse quantity, rate, or amount cells. It currently accepts incomplete `auto`, non-numeric amount cells, and explicit mismatches. The Python compatibility engine is the only implementation that enforces these money rules today.
+
 ### 5.1 Decimal arithmetic
 
-Financial arithmetic uses decimal values, never binary floating-point values.
+Planned financial arithmetic uses decimal values, never binary floating-point values.
 
 ### 5.2 Automatic amounts
 
-A payable amount cell that is blank or contains `auto` is calculated when both a recognized quantity and unit-price cell are numeric:
+A payable amount cell that is blank or contains `auto` is planned to be calculated when both a recognized quantity and unit-price cell are numeric:
 
 ```text
 line amount = quantity × unit price
 ```
 
-If calculation inputs are incomplete, `auto` is an error.
+If calculation inputs are incomplete, `auto` is planned to be an error.
 
 ### 5.3 Explicit amounts
 
-A numeric amount is explicit. When quantity and unit price are also calculable:
+A numeric amount is planned to be explicit. When quantity and unit price are also calculable:
 
 - matching explicit value: accepted;
 - differing explicit value: error by default;
-- `--trust-explicit`: use the authored value;
-- `--recalculate`: ignore the authored value and calculate.
+- `--trust-explicit`: planned Rust option to use the authored value;
+- `--recalculate`: planned Rust option to ignore the authored value and calculate.
 
-The two flags are mutually exclusive.
+The two options are mutually exclusive. The Rust adapter currently rejects both options.
 
 ### 5.4 Totals
 
-The renderer derives:
+The planned Rust renderer derives:
 
 - each line amount;
 - each financial section subtotal where needed;
@@ -298,7 +314,7 @@ calculated presentation.
 
 ### 5.5 Explicit-only rows
 
-A row with a payable numeric amount and no quantity/rate inputs is valid. This supports reimbursements, credits, negotiated adjustments, source-currency conversions, and rounding corrections.
+A row with a payable numeric amount and no quantity/rate inputs is planned to be valid. This supports reimbursements, credits, negotiated adjustments, source-currency conversions, and rounding corrections.
 
 ### 5.6 No tax engine
 
@@ -394,25 +410,26 @@ Decorative frame strokes are hidden from assistive technology.
 - `ttyinv` version;
 - Playwright/Chromium revision;
 - platform and rasterization environment.
-
 ## 11. Diagnostics
 
-Every diagnostic record has all ten fields on every surface:
+Diagnostic records contain twelve fields. Required fields always have values. Optional fields are omitted from JSON when unavailable; they are never emitted as `null`.
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `severity` | yes | `error` or `warning` |
-| `code` | yes | Diagnostic code |
-| `message` | yes | Human-readable explanation |
-| `path` | no | Source path |
+| `severity` | yes | Typed severity, serialized as lowercase `error` or `warning` |
+| `code` | yes | Diagnostic code from the typed taxonomy |
+| `message` | yes | Fixed human-readable explanation without authored document content |
+| `path` | no | File path exactly as supplied by the user |
+| `field_path` | no | Canonical document path using the canvas path grammar |
 | `line` | no | One-based source line |
 | `column` | no | One-based source column |
 | `hint` | no | Suggested correction |
-| `section` | no | Section title |
+| `section` | no | Authored section title |
+| `section_index` | no | One-based section index |
 | `row` | no | One-based table row |
 | `column_name` | no | Table heading |
 
-Required fields always have values. Optional fields are `null` when unavailable in structured output. Human output renders the same record in compiler-style form and omits unavailable optional components. `path`, `line`, and `column` locate the authored token. `section`, `row`, and `column_name` locate table data when applicable.
+The `path` field belongs to the adapter. The core does not set it. `field_path` uses the same grammar as the canvas contract, such as `settlements[2].date`. `column_name` is omitted when the column has no heading. Human output renders available fields in compiler-style form and omits unavailable optional components.
 
 The complete diagnostic taxonomy is:
 
@@ -420,9 +437,9 @@ The complete diagnostic taxonomy is:
 | --- | --- | --- |
 | `FRONTMATTER001` | error | Frontmatter is missing its opening or closing delimiter |
 | `YAML001` | error | YAML is malformed |
-| `SCHEMA001` | error | Typed frontmatter is invalid, or a field is unknown or missing |
+| `SCHEMA001` | error | Frontmatter contains an explicit null or an unknown field |
 | `SCHEMA002` | error | The schema value is not supported |
-| `SCHEMA003` | error | Required text is empty |
+| `SCHEMA003` | error | A required value is absent or blank |
 | `CURRENCY001` | error | The currency code is invalid |
 | `DATE001` | error | The date is invalid |
 | `DATE002` | error | The due date precedes the issue date |
@@ -435,16 +452,18 @@ The complete diagnostic taxonomy is:
 | `TABLE004` | error | A financial section contains a second table |
 | `HTML001` | error | The document contains unsupported raw HTML |
 | `LIMIT001` | error | The diagnostic limit was reached |
+| `INPUT001` | error | The CLI cannot read the input or the input is not valid UTF-8 |
+| `INPUT002` | error | The input exceeds `MAX_SOURCE_BYTES` |
 
 Warnings print but do not make the document invalid. Errors make the document invalid.
 
 Human output follows the compiler-style shape:
 
 ```text
-invoice.md:24:1: error[SCHEMA001]: unknown frontmatter field 'foo'
+invoice.md:24:1: error[SCHEMA001]: invalid frontmatter
 ```
 
-`ttyinv lint --json` emits all ten fields, including warning diagnostics.
+`ttyinv lint --json` emits the compatibility renderer's diagnostic records. The Rust `ttyinv validate --json <file>` command emits Rust diagnostics and includes warning diagnostics. Optional JSON fields are omitted when unavailable.
 
 Process exit codes are:
 

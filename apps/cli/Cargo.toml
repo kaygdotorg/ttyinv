@@ -10,6 +10,9 @@ repository.workspace = true
 name = "ttyinv"
 path = "src/main.rs"
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 serde_json.workspace = true
 ttyinv-core = { path = "../../crates/ttyinv-core" }

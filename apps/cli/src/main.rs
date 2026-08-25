@@ -2,30 +2,19 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::Path;
-use std::process::ExitCode;
+use std::process;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ttyinv_cli::{codes, exit};
 use ttyinv_core::{Diagnostic, MAX_SOURCE_BYTES, Severity, schema_json, validate};
-
-pub const EXIT_SUCCESS: u8 = 0;
-pub const EXIT_DOCUMENT_INVALID: u8 = 1;
-pub const EXIT_USAGE: u8 = 2;
-pub const EXIT_INPUT: u8 = 3;
-pub const EXIT_OUTPUT: u8 = 4;
-pub const EXIT_RENDER: u8 = 5;
-pub const EXIT_INTERNAL: u8 = 70;
-
-const INPUT_UNREADABLE: &str = "INPUT001";
-const INPUT_TOO_LARGE: &str = "INPUT002";
-const USAGE_INVALID_ARGS: &str = "USAGE001";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-fn main() -> ExitCode {
-    ExitCode::from(run(env::args().skip(1)))
+fn main() -> ! {
+    process::exit(run(env::args().skip(1)));
 }
 
-fn run<I>(args: I) -> u8
+fn run<I>(args: I) -> i32
 where
     I: IntoIterator<Item = String>,
 {
@@ -44,7 +33,7 @@ where
     }
 }
 
-fn run_schema(args: &[String]) -> u8 {
+fn run_schema(args: &[String]) -> i32 {
     let mut output: Option<&Path> = None;
     let mut index = 0;
     while index < args.len() {
@@ -75,17 +64,17 @@ fn run_schema(args: &[String]) -> u8 {
 
     match output {
         Some(path) => match write_atomic(path, schema_json().as_bytes()) {
-            Ok(()) => EXIT_SUCCESS,
+            Ok(()) => exit::SUCCESS,
             Err(()) => {
                 let _ = write_stderr_line("error: cannot write schema output");
-                EXIT_OUTPUT
+                exit::OUTPUT
             }
         },
         None => write_stdout(schema_json()),
     }
 }
 
-fn run_validate(args: &[String]) -> u8 {
+fn run_validate(args: &[String]) -> i32 {
     let json_output = args.iter().any(|arg| arg == "--json");
     let mut input: Option<&str> = None;
 
@@ -100,6 +89,9 @@ fn run_validate(args: &[String]) -> u8 {
             }
             value if value.starts_with('-') => {
                 return validate_usage_error("unexpected option for validate", json_output);
+            }
+            "" => {
+                return validate_usage_error("validate requires an input file", json_output);
             }
             value if input.is_none() => input = Some(value),
             _ => {
@@ -117,12 +109,12 @@ fn run_validate(args: &[String]) -> u8 {
         Err((code, message)) => {
             let diagnostic = adapter_diagnostic(code, message, Some(input));
             if json_output {
-                return write_json_result(false, &[diagnostic], EXIT_INPUT);
+                return write_json_result(false, &[diagnostic], exit::INPUT);
             }
             if write_diagnostic_text(&diagnostic).is_err() {
-                return EXIT_OUTPUT;
+                return exit::OUTPUT;
             }
-            return EXIT_INPUT;
+            return exit::INPUT;
         }
     };
 
@@ -137,36 +129,36 @@ fn run_validate(args: &[String]) -> u8 {
             report.is_valid(),
             &diagnostics,
             if report.is_valid() {
-                EXIT_SUCCESS
+                exit::SUCCESS
             } else {
-                EXIT_DOCUMENT_INVALID
+                exit::DOCUMENT_INVALID
             },
         );
     }
 
     for diagnostic in &diagnostics {
         if write_diagnostic_text(diagnostic).is_err() {
-            return EXIT_OUTPUT;
+            return exit::OUTPUT;
         }
     }
 
     if report.is_valid() {
-        EXIT_SUCCESS
+        exit::SUCCESS
     } else {
-        EXIT_DOCUMENT_INVALID
+        exit::DOCUMENT_INVALID
     }
 }
 
 fn read_source(input: &str) -> Result<String, (&'static str, &'static str)> {
-    let file = File::open(input).map_err(|_| (INPUT_UNREADABLE, "cannot read input"))?;
+    let file = File::open(input).map_err(|_| (codes::INPUT001, "cannot read input"))?;
     let mut bytes = Vec::new();
     file.take((MAX_SOURCE_BYTES as u64) + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| (INPUT_UNREADABLE, "cannot read input"))?;
+        .map_err(|_| (codes::INPUT001, "cannot read input"))?;
     if bytes.len() > MAX_SOURCE_BYTES {
-        return Err((INPUT_TOO_LARGE, "input exceeds the source size limit"));
+        return Err((codes::INPUT002, "input exceeds the source size limit"));
     }
-    String::from_utf8(bytes).map_err(|_| (INPUT_UNREADABLE, "input is not valid UTF-8"))
+    String::from_utf8(bytes).map_err(|_| (codes::INPUT001, "input is not valid UTF-8"))
 }
 
 fn adapter_diagnostic(code: &str, message: &str, path: Option<&str>) -> Diagnostic {
@@ -175,10 +167,12 @@ fn adapter_diagnostic(code: &str, message: &str, path: Option<&str>) -> Diagnost
         code: code.to_owned(),
         message: message.to_owned(),
         path: path.map(str::to_owned),
+        field_path: None,
         line: None,
         column: None,
         hint: None,
         section: None,
+        section_index: None,
         row: None,
         column_name: None,
     }
@@ -190,15 +184,16 @@ fn with_path(diagnostic: &Diagnostic, path: &str) -> Diagnostic {
         code: diagnostic.code.clone(),
         message: diagnostic.message.clone(),
         path: Some(path.to_owned()),
+        field_path: diagnostic.field_path.clone(),
         line: diagnostic.line,
         column: diagnostic.column,
         hint: diagnostic.hint.clone(),
-        section: diagnostic.section,
+        section: diagnostic.section.clone(),
+        section_index: diagnostic.section_index,
         row: diagnostic.row,
         column_name: diagnostic.column_name.clone(),
     }
 }
-
 fn write_diagnostic_text(diagnostic: &Diagnostic) -> Result<(), ()> {
     let severity = match diagnostic.severity {
         Severity::Error => "error",
@@ -217,6 +212,12 @@ fn write_diagnostic_text(diagnostic: &Diagnostic) -> Result<(), ()> {
         format!("{location}: {severity}[{}]", diagnostic.code)
     };
     write_stderr_line(&format!("{prefix}: {}", diagnostic.message))?;
+    if let Some(field_path) = &diagnostic.field_path {
+        write_stderr_line(&format!("field: {field_path}"))?;
+    }
+    if let Some(section) = &diagnostic.section {
+        write_stderr_line(&format!("section: {section}"))?;
+    }
     if let Some(hint) = &diagnostic.hint {
         write_stderr_line(&format!("hint: {hint}"))?;
     }
@@ -242,10 +243,12 @@ fn diagnostic_json(diagnostic: &Diagnostic) -> serde_json::Value {
         serde_json::Value::String(diagnostic.message.clone()),
     );
     insert_optional_string(&mut object, "path", diagnostic.path.as_deref());
+    insert_optional_string(&mut object, "field_path", diagnostic.field_path.as_deref());
     insert_optional_number(&mut object, "line", diagnostic.line);
     insert_optional_number(&mut object, "column", diagnostic.column);
     insert_optional_string(&mut object, "hint", diagnostic.hint.as_deref());
-    insert_optional_number(&mut object, "section", diagnostic.section);
+    insert_optional_string(&mut object, "section", diagnostic.section.as_deref());
+    insert_optional_u32(&mut object, "section_index", diagnostic.section_index);
     insert_optional_number(&mut object, "row", diagnostic.row);
     insert_optional_string(
         &mut object,
@@ -275,7 +278,17 @@ fn insert_optional_number(
     }
 }
 
-fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: u8) -> u8 {
+fn insert_optional_u32(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<u32>,
+) {
+    if let Some(value) = value {
+        object.insert(key.to_owned(), serde_json::Value::from(value));
+    }
+}
+
+fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: i32) -> i32 {
     let diagnostics = diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>();
     let value = serde_json::json!({
         "valid": valid,
@@ -284,58 +297,58 @@ fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: u8) -> u8 
     match serde_json::to_string(&value) {
         Ok(json) => {
             let output_status = write_stdout_line(&json);
-            if output_status == EXIT_SUCCESS {
+            if output_status == exit::SUCCESS {
                 status
             } else {
-                EXIT_OUTPUT
+                exit::OUTPUT
             }
         }
-        Err(_) => EXIT_OUTPUT,
+        Err(_) => exit::OUTPUT,
     }
 }
 
-fn validate_usage_error(message: &str, json_output: bool) -> u8 {
+fn validate_usage_error(message: &str, json_output: bool) -> i32 {
     if json_output {
-        let diagnostic = adapter_diagnostic(USAGE_INVALID_ARGS, message, None);
-        return write_json_result(false, &[diagnostic], EXIT_USAGE);
+        let diagnostic = adapter_diagnostic(codes::USAGE001, message, None);
+        return write_json_result(false, &[diagnostic], exit::USAGE);
     }
     usage_error(message)
 }
-fn usage_error(message: &str) -> u8 {
+fn usage_error(message: &str) -> i32 {
     if write_stderr_line(&format!("error: {message}")).is_err()
         || write_stderr_line("Run `ttyinv --help` for usage.").is_err()
     {
-        return EXIT_OUTPUT;
+        return exit::OUTPUT;
     }
-    EXIT_USAGE
+    exit::USAGE
 }
 
-fn print_help() -> u8 {
+fn print_help() -> i32 {
     let help = format!(
         "ttyinv {VERSION}\n\nValidate ttyinv invoices.\n\nUsage:\n  ttyinv schema [--output <path>]\n  ttyinv validate [--json] <file>\n  ttyinv --help\n  ttyinv --version\n",
     );
     write_stdout(&help)
 }
 
-fn print_schema_help() -> u8 {
+fn print_schema_help() -> i32 {
     write_stdout_line("Usage: ttyinv schema [--output <path>]")
 }
 
-fn print_validate_help() -> u8 {
+fn print_validate_help() -> i32 {
     write_stdout_line("Usage: ttyinv validate [--json] <file>")
 }
 
-fn write_stdout(text: &str) -> u8 {
+fn write_stdout(text: &str) -> i32 {
     let stdout = io::stdout();
     let mut handle = stdout.lock();
     if handle.write_all(text.as_bytes()).is_err() || handle.flush().is_err() {
-        EXIT_OUTPUT
+        exit::OUTPUT
     } else {
-        EXIT_SUCCESS
+        exit::SUCCESS
     }
 }
 
-fn write_stdout_line(text: &str) -> u8 {
+fn write_stdout_line(text: &str) -> i32 {
     let mut line = String::with_capacity(text.len() + 1);
     line.push_str(text);
     line.push('\n');
@@ -395,13 +408,13 @@ mod tests {
     fn exit_codes_match_process_contract() {
         assert_eq!(
             [
-                EXIT_SUCCESS,
-                EXIT_DOCUMENT_INVALID,
-                EXIT_USAGE,
-                EXIT_INPUT,
-                EXIT_OUTPUT,
-                EXIT_RENDER,
-                EXIT_INTERNAL,
+                exit::SUCCESS,
+                exit::DOCUMENT_INVALID,
+                exit::USAGE,
+                exit::INPUT,
+                exit::OUTPUT,
+                exit::RENDER,
+                exit::INTERNAL,
             ],
             [0, 1, 2, 3, 4, 5, 70]
         );
