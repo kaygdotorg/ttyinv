@@ -1,0 +1,409 @@
+use std::env;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::path::Path;
+use std::process::ExitCode;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use ttyinv_core::{Diagnostic, MAX_SOURCE_BYTES, Severity, schema_json, validate};
+
+pub const EXIT_SUCCESS: u8 = 0;
+pub const EXIT_DOCUMENT_INVALID: u8 = 1;
+pub const EXIT_USAGE: u8 = 2;
+pub const EXIT_INPUT: u8 = 3;
+pub const EXIT_OUTPUT: u8 = 4;
+pub const EXIT_RENDER: u8 = 5;
+pub const EXIT_INTERNAL: u8 = 70;
+
+const INPUT_UNREADABLE: &str = "INPUT001";
+const INPUT_TOO_LARGE: &str = "INPUT002";
+const USAGE_INVALID_ARGS: &str = "USAGE001";
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn main() -> ExitCode {
+    ExitCode::from(run(env::args().skip(1)))
+}
+
+fn run<I>(args: I) -> u8
+where
+    I: IntoIterator<Item = String>,
+{
+    let args: Vec<String> = args.into_iter().collect();
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+        return print_help();
+    }
+    if args.len() == 1 && matches!(args[0].as_str(), "--version" | "-V") {
+        return write_stdout_line(&format!("ttyinv {VERSION}"));
+    }
+
+    match args.first().map(String::as_str) {
+        Some("schema") => run_schema(&args[1..]),
+        Some("validate") => run_validate(&args[1..]),
+        _ => usage_error("expected one of: schema, validate"),
+    }
+}
+
+fn run_schema(args: &[String]) -> u8 {
+    let mut output: Option<&Path> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--output" | "-o" => {
+                index += 1;
+                let Some(path) = args.get(index) else {
+                    return usage_error("--output requires a path");
+                };
+                if path.is_empty() || path.starts_with('-') {
+                    return usage_error("--output requires a path");
+                }
+                output = Some(Path::new(path));
+            }
+            "--help" | "-h" => {
+                return if args.len() == 1 {
+                    print_schema_help()
+                } else {
+                    usage_error("unexpected argument for schema")
+                };
+            }
+            _ => {
+                return usage_error("unexpected argument for schema");
+            }
+        }
+        index += 1;
+    }
+
+    match output {
+        Some(path) => match write_atomic(path, schema_json().as_bytes()) {
+            Ok(()) => EXIT_SUCCESS,
+            Err(()) => {
+                let _ = write_stderr_line("error: cannot write schema output");
+                EXIT_OUTPUT
+            }
+        },
+        None => write_stdout(schema_json()),
+    }
+}
+
+fn run_validate(args: &[String]) -> u8 {
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let mut input: Option<&str> = None;
+
+    for arg in args {
+        match arg.as_str() {
+            "--json" => {}
+            "--help" | "-h" => {
+                if args.len() == 1 {
+                    return print_validate_help();
+                }
+                return validate_usage_error("unexpected argument for validate", json_output);
+            }
+            value if value.starts_with('-') => {
+                return validate_usage_error("unexpected option for validate", json_output);
+            }
+            value if input.is_none() => input = Some(value),
+            _ => {
+                return validate_usage_error("validate requires one input file", json_output);
+            }
+        }
+    }
+
+    let Some(input) = input else {
+        return validate_usage_error("validate requires an input file", json_output);
+    };
+
+    let source = match read_source(input) {
+        Ok(source) => source,
+        Err((code, message)) => {
+            let diagnostic = adapter_diagnostic(code, message, Some(input));
+            if json_output {
+                return write_json_result(false, &[diagnostic], EXIT_INPUT);
+            }
+            if write_diagnostic_text(&diagnostic).is_err() {
+                return EXIT_OUTPUT;
+            }
+            return EXIT_INPUT;
+        }
+    };
+
+    let report = validate(&source);
+    let diagnostics: Vec<Diagnostic> = report
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| with_path(diagnostic, input))
+        .collect();
+    if json_output {
+        return write_json_result(
+            report.is_valid(),
+            &diagnostics,
+            if report.is_valid() {
+                EXIT_SUCCESS
+            } else {
+                EXIT_DOCUMENT_INVALID
+            },
+        );
+    }
+
+    for diagnostic in &diagnostics {
+        if write_diagnostic_text(diagnostic).is_err() {
+            return EXIT_OUTPUT;
+        }
+    }
+
+    if report.is_valid() {
+        EXIT_SUCCESS
+    } else {
+        EXIT_DOCUMENT_INVALID
+    }
+}
+
+fn read_source(input: &str) -> Result<String, (&'static str, &'static str)> {
+    let file = File::open(input).map_err(|_| (INPUT_UNREADABLE, "cannot read input"))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_SOURCE_BYTES as u64) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| (INPUT_UNREADABLE, "cannot read input"))?;
+    if bytes.len() > MAX_SOURCE_BYTES {
+        return Err((INPUT_TOO_LARGE, "input exceeds the source size limit"));
+    }
+    String::from_utf8(bytes).map_err(|_| (INPUT_UNREADABLE, "input is not valid UTF-8"))
+}
+
+fn adapter_diagnostic(code: &str, message: &str, path: Option<&str>) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: code.to_owned(),
+        message: message.to_owned(),
+        path: path.map(str::to_owned),
+        line: None,
+        column: None,
+        hint: None,
+        section: None,
+        row: None,
+        column_name: None,
+    }
+}
+
+fn with_path(diagnostic: &Diagnostic, path: &str) -> Diagnostic {
+    Diagnostic {
+        severity: diagnostic.severity,
+        code: diagnostic.code.clone(),
+        message: diagnostic.message.clone(),
+        path: Some(path.to_owned()),
+        line: diagnostic.line,
+        column: diagnostic.column,
+        hint: diagnostic.hint.clone(),
+        section: diagnostic.section,
+        row: diagnostic.row,
+        column_name: diagnostic.column_name.clone(),
+    }
+}
+
+fn write_diagnostic_text(diagnostic: &Diagnostic) -> Result<(), ()> {
+    let severity = match diagnostic.severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+    };
+    let mut location = diagnostic.path.clone().unwrap_or_default();
+    if let Some(line) = diagnostic.line {
+        location.push_str(&format!(":{line}"));
+    }
+    if let Some(column) = diagnostic.column {
+        location.push_str(&format!(":{column}"));
+    }
+    let prefix = if location.is_empty() {
+        format!("{severity}[{}]", diagnostic.code)
+    } else {
+        format!("{location}: {severity}[{}]", diagnostic.code)
+    };
+    write_stderr_line(&format!("{prefix}: {}", diagnostic.message))?;
+    if let Some(hint) = &diagnostic.hint {
+        write_stderr_line(&format!("hint: {hint}"))?;
+    }
+    Ok(())
+}
+
+fn diagnostic_json(diagnostic: &Diagnostic) -> serde_json::Value {
+    // Optional diagnostic fields are omitted instead of being encoded as null.
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "severity".to_owned(),
+        serde_json::Value::String(match diagnostic.severity {
+            Severity::Error => "error".to_owned(),
+            Severity::Warning => "warning".to_owned(),
+        }),
+    );
+    object.insert(
+        "code".to_owned(),
+        serde_json::Value::String(diagnostic.code.clone()),
+    );
+    object.insert(
+        "message".to_owned(),
+        serde_json::Value::String(diagnostic.message.clone()),
+    );
+    insert_optional_string(&mut object, "path", diagnostic.path.as_deref());
+    insert_optional_number(&mut object, "line", diagnostic.line);
+    insert_optional_number(&mut object, "column", diagnostic.column);
+    insert_optional_string(&mut object, "hint", diagnostic.hint.as_deref());
+    insert_optional_number(&mut object, "section", diagnostic.section);
+    insert_optional_number(&mut object, "row", diagnostic.row);
+    insert_optional_string(
+        &mut object,
+        "column_name",
+        diagnostic.column_name.as_deref(),
+    );
+    serde_json::Value::Object(object)
+}
+
+fn insert_optional_string(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<&str>,
+) {
+    if let Some(value) = value {
+        object.insert(key.to_owned(), serde_json::Value::String(value.to_owned()));
+    }
+}
+
+fn insert_optional_number(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<usize>,
+) {
+    if let Some(value) = value {
+        object.insert(key.to_owned(), serde_json::Value::from(value));
+    }
+}
+
+fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: u8) -> u8 {
+    let diagnostics = diagnostics.iter().map(diagnostic_json).collect::<Vec<_>>();
+    let value = serde_json::json!({
+        "valid": valid,
+        "diagnostics": diagnostics,
+    });
+    match serde_json::to_string(&value) {
+        Ok(json) => {
+            let output_status = write_stdout_line(&json);
+            if output_status == EXIT_SUCCESS {
+                status
+            } else {
+                EXIT_OUTPUT
+            }
+        }
+        Err(_) => EXIT_OUTPUT,
+    }
+}
+
+fn validate_usage_error(message: &str, json_output: bool) -> u8 {
+    if json_output {
+        let diagnostic = adapter_diagnostic(USAGE_INVALID_ARGS, message, None);
+        return write_json_result(false, &[diagnostic], EXIT_USAGE);
+    }
+    usage_error(message)
+}
+fn usage_error(message: &str) -> u8 {
+    if write_stderr_line(&format!("error: {message}")).is_err()
+        || write_stderr_line("Run `ttyinv --help` for usage.").is_err()
+    {
+        return EXIT_OUTPUT;
+    }
+    EXIT_USAGE
+}
+
+fn print_help() -> u8 {
+    let help = format!(
+        "ttyinv {VERSION}\n\nValidate ttyinv invoices.\n\nUsage:\n  ttyinv schema [--output <path>]\n  ttyinv validate [--json] <file>\n  ttyinv --help\n  ttyinv --version\n",
+    );
+    write_stdout(&help)
+}
+
+fn print_schema_help() -> u8 {
+    write_stdout_line("Usage: ttyinv schema [--output <path>]")
+}
+
+fn print_validate_help() -> u8 {
+    write_stdout_line("Usage: ttyinv validate [--json] <file>")
+}
+
+fn write_stdout(text: &str) -> u8 {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    if handle.write_all(text.as_bytes()).is_err() || handle.flush().is_err() {
+        EXIT_OUTPUT
+    } else {
+        EXIT_SUCCESS
+    }
+}
+
+fn write_stdout_line(text: &str) -> u8 {
+    let mut line = String::with_capacity(text.len() + 1);
+    line.push_str(text);
+    line.push('\n');
+    write_stdout(&line)
+}
+
+fn write_stderr_line(text: &str) -> Result<(), ()> {
+    let stderr = io::stderr();
+    let mut handle = stderr.lock();
+    handle.write_all(text.as_bytes()).map_err(|_| ())?;
+    handle.write_all(b"\n").map_err(|_| ())?;
+    handle.flush().map_err(|_| ())
+}
+
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or(())?.to_string_lossy();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_nanos();
+    let temp_path = parent.join(format!(
+        ".{file_name}.ttyinv-{stamp}-{}",
+        std::process::id()
+    ));
+
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|_| ())?;
+        file.write_all(bytes).map_err(|_| ())?;
+        file.sync_all().map_err(|_| ())?;
+        fs::rename(&temp_path, path).map_err(|_| ())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_write_creates_schema_file() {
+        let path = std::env::temp_dir().join(format!("ttyinv-cli-test-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        write_atomic(&path, b"schema").expect("write succeeds");
+        assert_eq!(fs::read(&path).expect("read succeeds"), b"schema");
+        fs::remove_file(path).expect("cleanup succeeds");
+    }
+
+    #[test]
+    fn exit_codes_match_process_contract() {
+        assert_eq!(
+            [
+                EXIT_SUCCESS,
+                EXIT_DOCUMENT_INVALID,
+                EXIT_USAGE,
+                EXIT_INPUT,
+                EXIT_OUTPUT,
+                EXIT_RENDER,
+                EXIT_INTERNAL,
+            ],
+            [0, 1, 2, 3, 4, 5, 70]
+        );
+    }
+}

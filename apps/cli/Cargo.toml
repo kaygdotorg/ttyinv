@@ -1,0 +1,15 @@
+[package]
+name = "ttyinv-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "ttyinv"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+ttyinv-core = { path = "../../crates/ttyinv-core" }

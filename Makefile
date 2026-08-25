@@ -2,6 +2,10 @@ PYTHON ?= python3
 VENV ?= .venv
 PY := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
+NIX_RUST ?= RUSTUP_TOOLCHAIN= nix shell nixpkgs\#rustc nixpkgs\#cargo -c
+
+RUST_BIN ?= target/release/ttyinv
+
 
 CONTAINER ?= podman
 GITLEAKS_IMAGE ?= docker.io/zricethezav/gitleaks@sha256:5d0147dc25c78f8cc2b9861ff8f5c9b4a41419ed60a9ce2217de5a215270b42b
@@ -15,7 +19,7 @@ VISUAL_CASES := \
 	long-row:examples/gallery/long-row.md:comfortable:1: \
 	multi-page:examples/gallery/multi-page.md:comfortable:3:stress
 
-.PHONY: install test lint privacy schema secrets visual build check preflight clean
+.PHONY: install test lint privacy schema secrets visual build check preflight clean rust-check rust-release parity
 
 install:
 	$(PYTHON) -m venv $(VENV)
@@ -90,3 +94,12 @@ preflight: check secrets visual
 clean:
 	rm -rf $(VENV) build dist artifacts .pytest_cache .coverage htmlcov
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+rust-check:
+	$(NIX_RUST) cargo check --workspace
+
+rust-release:
+	$(NIX_RUST) cargo build --workspace --release
+
+parity: rust-release
+	$(PY) scripts/check_rust_parity.py --rust "$(RUST_BIN)"

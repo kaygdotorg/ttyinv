@@ -11,6 +11,7 @@ htmlcov/
 .venv/
 venv/
 build/
+target/
 dist/
 *.egg-info/
 *.db
