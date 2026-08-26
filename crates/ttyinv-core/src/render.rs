@@ -291,6 +291,28 @@ pub fn supported_themes() -> &'static [&'static str] {
 pub fn supported_fonts() -> &'static [&'static str] {
     generated::FONT_IDS
 }
+pub fn supported_densities() -> &'static [&'static str] {
+    DENSITIES
+}
+pub fn supported_formats() -> &'static [RenderFormat] {
+    const FORMATS: &[RenderFormat] = &[RenderFormat::Html, RenderFormat::Pdf, RenderFormat::Png];
+    FORMATS
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct FontCapability {
+    pub id: &'static str,
+    pub regular_weight: u16,
+    pub semibold_weight: u16,
+}
+
+pub fn font_capabilities() -> impl Iterator<Item = FontCapability> {
+    generated::FONT_ASSETS.iter().map(|font| FontCapability {
+        id: font.id,
+        regular_weight: font.regular_weight,
+        semibold_weight: font.semibold_weight,
+    })
+}
 
 #[derive(Clone)]
 struct Resolved {
@@ -2646,6 +2668,18 @@ mod tests {
                 },
             );
             assert!(r.is_ok(), "{id}");
+        }
+    }
+    #[test]
+    fn capability_registries_match_resolvers() {
+        assert_eq!(
+            supported_formats(),
+            &[RenderFormat::Html, RenderFormat::Pdf, RenderFormat::Png]
+        );
+        assert_eq!(supported_densities(), &["comfortable", "compact"]);
+        assert_eq!(supported_fonts().len(), font_capabilities().count());
+        for id in supported_themes() {
+            assert!(theme_tokens(id).is_some(), "{id}");
         }
     }
     #[test]

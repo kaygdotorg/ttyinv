@@ -1,8 +1,10 @@
 use serde::Serialize;
 use ttyinv_core::{
-    apply_edit as apply_edit_engine, render as render_engine, revision as revision_engine,
-    Diagnostic, EditRequest, EditResponse, RenderError, RenderOptions, StructureManifest,
-    MAX_SOURCE_BYTES,
+    apply_edit as apply_edit_engine, font_capabilities, render as render_engine,
+    revision as revision_engine, supported_densities, supported_formats, supported_themes,
+    theme_tokens, Diagnostic, EditRequest, EditResponse, RenderError, RenderOptions,
+    StructureManifest, MAX_ASSET_BYTES, MAX_PAGES, MAX_PNG_PIXELS, MAX_RENDERED_BYTES,
+    MAX_SOURCE_BYTES, PAGE_HEIGHT, PAGE_WIDTH,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -15,6 +17,33 @@ struct ValidationResult<'a> {
     valid: bool,
     diagnostics: &'a [Diagnostic],
     structure_manifest: Option<StructureManifest>,
+}
+
+#[derive(Serialize)]
+struct RenderThemeCapability {
+    id: &'static str,
+    tokens: ttyinv_core::ThemeTokens,
+}
+
+#[derive(Serialize)]
+struct RenderLimits {
+    source_bytes: usize,
+    decoded_request_bytes: usize,
+    output_bytes: usize,
+    asset_bytes: usize,
+    pages: usize,
+    png_pixels: usize,
+    page_width: u32,
+    page_height: u32,
+}
+
+#[derive(Serialize)]
+struct RenderCapabilities {
+    formats: Vec<ttyinv_core::RenderFormat>,
+    themes: Vec<RenderThemeCapability>,
+    fonts: Vec<ttyinv_core::FontCapability>,
+    densities: &'static [&'static str],
+    limits: RenderLimits,
 }
 fn bounded_string(value: &JsValue, field: &str, limit: usize) -> Result<String, JsValue> {
     let length = value
@@ -70,6 +99,31 @@ pub fn revision(source: JsValue) -> Result<String, JsValue> {
     Ok(revision_engine(&bounded_source(source)?))
 }
 
+#[wasm_bindgen]
+pub fn render_capabilities() -> Result<JsValue, JsValue> {
+    let themes = supported_themes()
+        .iter()
+        .filter_map(|id| theme_tokens(id).map(|tokens| RenderThemeCapability { id, tokens }))
+        .collect();
+    let capabilities = RenderCapabilities {
+        formats: supported_formats().to_vec(),
+        themes,
+        fonts: font_capabilities().collect(),
+        densities: supported_densities(),
+        limits: RenderLimits {
+            source_bytes: MAX_SOURCE_BYTES,
+            decoded_request_bytes: MAX_DECODED_REQUEST_BYTES,
+            output_bytes: MAX_WASM_OUTPUT_BYTES.min(MAX_RENDERED_BYTES),
+            asset_bytes: MAX_ASSET_BYTES,
+            pages: MAX_PAGES,
+            png_pixels: MAX_PNG_PIXELS,
+            page_width: PAGE_WIDTH,
+            page_height: PAGE_HEIGHT,
+        },
+    };
+    serde_wasm_bindgen::to_value(&capabilities)
+        .map_err(|error| adapter_error("metadata", error.to_string()))
+}
 fn snapshot_edit_request(request: &JsValue) -> Result<JsValue, JsValue> {
     if !request.is_object() || request.is_null() {
         return Err(adapter_error(
