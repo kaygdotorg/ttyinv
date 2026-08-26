@@ -1,4 +1,5 @@
-NIX_RUST ?= RUSTUP_TOOLCHAIN= nix shell nixpkgs\#rustc nixpkgs\#cargo -c
+NIX_RUST ?= RUSTUP_TOOLCHAIN= nix shell nixpkgs\#rustc nixpkgs\#cargo nixpkgs\#rustfmt -c
+RUST_FILES := $(sort $(wildcard apps/cli/src/*.rs apps/cli/tests/*.rs crates/ttyinv-core/src/*.rs crates/ttyinv-core/tests/*.rs crates/ttyinv-wasm/src/*.rs))
 
 .PHONY: test check rust-check rust-release wasm format schema clean parity
 
@@ -15,7 +16,7 @@ wasm:
 	$(NIX_RUST) cargo check -p ttyinv-wasm --target wasm32-unknown-unknown
 
 format:
-	nix shell nixpkgs\#rustc nixpkgs\#rustfmt -c rustfmt --check crates/ttyinv-core/src crates/ttyinv-core/tests crates/ttyinv-wasm/src apps/cli/src
+	$(NIX_RUST) rustfmt --check $(RUST_FILES)
 
 schema:
 	$(NIX_RUST) cargo run -q -p ttyinv-cli -- schema --output /tmp/ttyinv-v2.schema.json
