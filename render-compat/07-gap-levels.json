@@ -1,0 +1,121 @@
+{
+  "fixture": "07-gap-levels",
+  "source": "07-gap-levels.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable"
+  },
+  "currency": "EUR",
+  "currency_exponent": 2,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:No gap",
+    "section:Tight gap",
+    "section:Standard gap",
+    "section:Roomy gap"
+  ],
+  "sections": [
+    {
+      "title": "No gap",
+      "body": "table",
+      "row_amounts": [
+        "10.00"
+      ],
+      "directives": {
+        "gap": "none",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "currency_exponent": 2,
+      "total": "10.00"
+    },
+    {
+      "title": "Tight gap",
+      "body": "prose",
+      "row_amounts": [],
+      "total": "0.00",
+      "directives": {
+        "gap": "tight",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "currency_exponent": 2
+    },
+    {
+      "title": "Standard gap",
+      "body": "prose",
+      "row_amounts": [],
+      "total": "0.00",
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      }
+    },
+    {
+      "title": "Roomy gap",
+      "body": "prose",
+      "row_amounts": [],
+      "total": "0.00",
+      "directives": {
+        "gap": "roomy",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "currency_exponent": 2
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "payment",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "10.00",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {},
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

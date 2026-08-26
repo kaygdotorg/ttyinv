@@ -1,13 +1,23 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: CONF-004
-  issued: 2026-01-15
-  currency: EUR
-from:
-  name: Example Sender
-to:
-  name: Example Recipient
+schema: ttyinv/v2
 ---
 
-Invoice text has no structured section.
+# Example invoice
+
+- Number: INV-001
+- Issued: 2026-01-15
+- Currency: EUR
+
+## Other
+
+- Name: Example Seller
+
+## Bill to
+
+- Name: Example Buyer
+
+## Services
+
+| Description | Amount (EUR) |
+|---|---:|
+| Service | 10.00 |

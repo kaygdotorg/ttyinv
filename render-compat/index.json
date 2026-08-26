@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "description": "Canonical v2 renderer compatibility corpus. Sources use fabricated identities and example.com addresses.",
+  "contract": "Expected JSON records semantic content only; pixel rectangles are intentionally absent. CLI-visible validation and section manifests are checked when a canonical binary is available; other fields state source-derived invariants and methods.",
+  "fixtures": [
+    {
+      "id": "01-simple",
+      "source": "01-simple.md",
+      "expected": "01-simple.json",
+      "features": [
+        "simple",
+        "auto amount",
+        "links"
+      ]
+    },
+    {
+      "id": "02-long-title-address",
+      "source": "02-long-title-address.md",
+      "expected": "02-long-title-address.json",
+      "features": [
+        "long title",
+        "long addresses",
+        "auto amount"
+      ]
+    },
+    {
+      "id": "03-multiple-financial-sections",
+      "source": "03-multiple-financial-sections.md",
+      "expected": "03-multiple-financial-sections.json",
+      "features": [
+        "multiple financial sections",
+        "negative line item"
+      ]
+    },
+    {
+      "id": "04-prose",
+      "source": "04-prose.md",
+      "expected": "04-prose.json",
+      "features": [
+        "prose",
+        "zero-row sections"
+      ]
+    },
+    {
+      "id": "05-summary-only",
+      "source": "05-summary-only.md",
+      "expected": "05-summary-only.json",
+      "features": [
+        "summary-only",
+        "explicit summary rows"
+      ]
+    },
+    {
+      "id": "06-page-break",
+      "source": "06-page-break.md",
+      "expected": "06-page-break.json",
+      "features": [
+        "page-break directive",
+        "payment block"
+      ]
+    },
+    {
+      "id": "07-gap-levels",
+      "source": "07-gap-levels.md",
+      "expected": "07-gap-levels.json",
+      "features": [
+        "gap none",
+        "gap tight",
+        "gap standard",
+        "gap roomy"
+      ]
+    },
+    {
+      "id": "08-settlements-payment",
+      "source": "08-settlements-payment.md",
+      "expected": "08-settlements-payment.json",
+      "features": [
+        "settlements",
+        "payment",
+        "fixed block page breaks"
+      ]
+    },
+    {
+      "id": "09-signature-image",
+      "source": "09-signature-image.md",
+      "expected": "09-signature-image.json",
+      "features": [
+        "signature image metadata",
+        "signature fixed block"
+      ]
+    },
+    {
+      "id": "10-multi-page-500",
+      "source": "10-multi-page-500.md",
+      "expected": "10-multi-page-500.json",
+      "features": [
+        "500 rows",
+        "multi-page stress"
+      ]
+    },
+    {
+      "id": "11-jpy",
+      "source": "11-jpy.md",
+      "expected": "11-jpy.json",
+      "features": [
+        "JPY",
+        "zero exponent"
+      ]
+    },
+    {
+      "id": "12-kwd",
+      "source": "12-kwd.md",
+      "expected": "12-kwd.json",
+      "features": [
+        "KWD",
+        "three exponent"
+      ]
+    },
+    {
+      "id": "13-negative-zero",
+      "source": "13-negative-zero.md",
+      "expected": "13-negative-zero.json",
+      "features": [
+        "negative amounts",
+        "zero amounts"
+      ]
+    },
+    {
+      "id": "14-rounded-rate-tolerance",
+      "source": "14-rounded-rate-tolerance.md",
+      "expected": "14-rounded-rate-tolerance.json",
+      "features": [
+        "rounded-rate tolerance",
+        "explicit amount"
+      ]
+    },
+    {
+      "id": "15-explicit-only",
+      "source": "15-explicit-only.md",
+      "expected": "15-explicit-only.json",
+      "features": [
+        "explicit-only amounts"
+      ]
+    },
+    {
+      "id": "16-escaped-pipes-br",
+      "source": "16-escaped-pipes-br.md",
+      "expected": "16-escaped-pipes-br.json",
+      "features": [
+        "escaped pipes",
+        "br line breaks"
+      ]
+    },
+    {
+      "id": "17-themes-density-fonts",
+      "source": "17-themes-density-fonts.md",
+      "expected": "17-themes-density-fonts.json",
+      "features": [
+        "theme id",
+        "density id",
+        "font id"
+      ]
+    }
+  ]
+}

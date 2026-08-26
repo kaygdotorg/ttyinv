@@ -1,53 +1,47 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-2026-104
-  title: Research support
-  issued: 2026-04-21
-  due: 2026-05-05
-  currency: EUR
-  locale: en-GB
-from:
-  name: Lattice Field Office
-  address:
-    - 77 Placeholder Street
-    - Vienna
-    - Austria
-  identifiers:
-    VAT: ATU00000000
-  email: finance@example.com
-to:
-  name: Fictional Materials Oy
-  address:
-    - 11 Sample Esplanade
-    - Helsinki
-    - Finland
-  identifiers:
-    VAT: FI00000000
-settlements:
-  - date: 2026-05-02
-    paid:
-      amount: "4680.00"
-      currency: EUR
-    received:
-      amount: "516920.40"
-      currency: INR
-payment:
-  title: Payment
-  methods:
-    - title: Remittance record
-      fields:
-        Beneficiary: Lattice Field Office
-        Reference: INV-2026-104
-        Instructions: Settlement details in this fixture are entirely fabricated
+schema: ttyinv/v2
+format: code-comma-dot
+theme: printable
+font: geist-mono
+density: comfortable
 ---
+
+# Consulting services
+
+- Number: INV-2026-001
+- Kind: standard
+- Issued: 2026-01-15
+- Due: 2026-01-29
+- Terms: Net 14
+- Currency: EUR
+
+## From
+
+- Name: Northstar Studio
+- Address: 10 Example Street
+- Address: Berlin
+- Email: billing@example.com
+- Website: https://northstar.example
+- ID.VAT: DE000000000
+
+## Bill to
+
+- Name: Acme Research Ltd
+- Address: 20 Sample Road
+- Address: Berlin
 
 ## Contract fees
 
 | Description | Days | Rate | Amount (EUR) |
-| --- | ---: | ---: | ---: |
-| Research support<br>1 Apr 2026 to 18 Apr 2026 | 9 | 520.00 | auto |
+|---|---:|---:|---:|
+| Systems consulting | 8 | 650.00 | auto |
 
 ## Notes
 
-This fixture demonstrates an optional post-payment settlement record. All values and organizations are fictitious.
+Payment is due within fourteen days.
+
+## Settlements
+
+| Date | Paid | Paid currency | Received | Received currency |
+|---|---:|---|---:|---|
+| 2026-02-01 | 5200.00 | EUR | 5200.00 | EUR |

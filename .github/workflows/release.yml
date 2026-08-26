@@ -1,60 +1,23 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
-permissions:
-  contents: write
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          fetch-depth: 0
-      - uses: actions/setup-python@v7
+          targets: wasm32-unknown-unknown
+      - run: cargo test --workspace
+      - run: cargo build --workspace --release
+      - run: cargo check -p ttyinv-wasm --target wasm32-unknown-unknown
+      - uses: actions/upload-artifact@v4
         with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install release toolchain
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -c constraints-release.txt -e '.[dev]'
-          python -m playwright install --with-deps chromium
-      - name: Vendor canonical Geist Mono assets
-        run: python scripts/vendor_geist_mono.py
-      - name: Verify source and tests
-        run: |
-          python scripts/privacy_check.py .
-          python -m pytest
-          python -m ttyinv schema --output /tmp/ttyinv-v1.schema.json
-          diff -u schema/ttyinv-v1.schema.json /tmp/ttyinv-v1.schema.json
-      - name: Build distributions
-        run: |
-          python -m build
-          python scripts/check_release_fonts.py --dist dist
-      - name: Build fabricated previews
-        run: |
-          mkdir -p release
-          python -m ttyinv render examples/reference.md --format both --theme light --deterministic --output release/ttyinv-preview-light
-          python -m ttyinv render examples/reference.md --format both --theme dark --deterministic --output release/ttyinv-preview-dark
-          python -m ttyinv render examples/reference.md --format pdf --theme dark --accent '#ff6b57' --deterministic --output release/ttyinv-preview-coral
-          python scripts/visual_contract.py release/ttyinv-preview-dark.html --screenshot release/ttyinv-preview-dark.png --report release/visual-contract.json
-      - name: Create checksums
-        shell: bash
-        run: |
-          cp dist/* release/
-          (cd release && sha256sum * > SHA256SUMS.txt)
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ttyinv-release-${{ github.ref_name }}
-          path: release/
-          if-no-files-found: error
-      - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
-        with:
-          generate_release_notes: true
-          files: release/*
-          fail_on_unmatched_files: true
+          name: ttyinv-rust-release
+          path: target/release/ttyinv

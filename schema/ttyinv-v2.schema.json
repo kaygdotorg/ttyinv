@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ttyinv.com/schema/ttyinv-v2.schema.json",
+  "title": "ttyinv/v2 frontmatter configuration",
+  "description": "Configuration keys for the ttyinv/v2 Markdown frontmatter. Document content is defined by SPEC.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema"],
+  "properties": {
+    "schema": { "const": "ttyinv/v2" },
+    "format": { "enum": ["code-comma-dot", "code-dot-comma", "code-space-comma", "code-indian", "code-plain"], "default": "code-comma-dot" },
+    "theme": { "enum": ["printable", "paper-white", "graphite", "blueprint", "ledger-pad", "solarized-light", "parchment", "midnight", "nord", "gruvbox-dark"], "default": "printable" },
+    "font": { "enum": ["geist-mono", "cousine", "fira", "ibm-plex", "inconsolata", "jetbrains", "roboto", "source-code", "space", "ubuntu"], "default": "geist-mono" },
+    "density": { "enum": ["comfortable", "compact"], "default": "comfortable" }
+  }
+}

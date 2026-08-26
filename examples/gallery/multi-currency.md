@@ -1,53 +1,41 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-2026-103
-  title: Engineering services and travel
-  issued: 2026-03-20
-  due: 2026-04-03
-  currency: EUR
-  locale: en-GB
-from:
-  name: Atlas Systems Cooperative
-  address:
-    - 5 Demonstration Lane
-    - Dublin
-    - Ireland
-  identifiers:
-    VAT: IE0000000X
-  email: finance@example.com
-to:
-  name: Sample Observatory SAS
-  address:
-    - 17 Example Quai
-    - Lyon
-    - France
-  identifiers:
-    VAT: FR00000000001
-payment:
-  title: Payment
-  methods:
-    - title: Transfer
-      fields:
-        Beneficiary: Atlas Systems Cooperative
-        Reference: INV-2026-103
-        Instructions: Contact finance@example.com for remittance details
+schema: ttyinv/v2
+format: code-comma-dot
+theme: printable
+font: geist-mono
+density: comfortable
 ---
 
-## Engineering fees
+# Consulting services
+
+- Number: INV-2026-001
+- Kind: standard
+- Issued: 2026-01-15
+- Due: 2026-01-29
+- Terms: Net 14
+- Currency: EUR
+
+## From
+
+- Name: Northstar Studio
+- Address: 10 Example Street
+- Address: Berlin
+- Email: billing@example.com
+- Website: https://northstar.example
+- ID.VAT: DE000000000
+
+## Bill to
+
+- Name: Acme Research Ltd
+- Address: 20 Sample Road
+- Address: Berlin
+
+## Contract fees
 
 | Description | Days | Rate | Amount (EUR) |
-| --- | ---: | ---: | ---: |
-| Reliability engineering<br>3 Mar 2026 to 14 Mar 2026 | 10 | 720.00 | auto |
+|---|---:|---:|---:|
+| Systems consulting | 8 | 650.00 | auto |
 
-## Travel expenses
+## Currency notes
 
-| Description | Amount (JPY) | Amount (EUR) |
-| --- | ---: | ---: |
-| Airport rail | 4200 | 25.90 |
-| Hotel transfer | 6800 | 41.93 |
-| Working dinner | 9100 | 56.11 |
-
-## Notes
-
-Source-currency amounts are informational. The explicitly supplied EUR column is payable and no live exchange-rate lookup is performed.
+Payment is due within fourteen days.

@@ -1,17 +1,23 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-EMPTY
-  issued: 2026-01-01
-  currency: EUR
-from:
-  name: Sender
-to:
-  name: Receiver
+schema: ttyinv/v2
 ---
+
+# Example invoice
+
+- Number: INV-001
+- Issued: 2026-01-15
+- Currency: EUR
+
+## From
+
+- Name: Example Seller
+
+## Bill to
+
+- Name: Example Buyer
 
 ##
 
 | Description | Amount (EUR) |
-| --- | ---: |
-| Work | 10 |
+|---|---:|
+| Service | 10.00 |

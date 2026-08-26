@@ -1,18 +1,23 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: CONF-002
-  issued: 2026-02-30
-  due: 2026-03-01
-  currency: EUR
-from:
-  name: Example Sender
-to:
-  name: Example Recipient
+schema: ttyinv/v2
 ---
+
+# Example invoice
+
+- Number: INV-001
+- Issued: 2026-02-30
+- Currency: EUR
+
+## From
+
+- Name: Example Seller
+
+## Bill to
+
+- Name: Example Buyer
 
 ## Services
 
 | Description | Amount (EUR) |
-| --- | ---: |
-| Consulting | 100.00 |
+|---|---:|
+| Service | 10.00 |

@@ -1,93 +1,84 @@
 use serde::Serialize;
 use ttyinv_core::{
-    Diagnostic, MAX_SOURCE_BYTES, ScalarEditRequest, ScalarEditResponse, Severity,
-    StructureManifest, apply_scalar as apply_scalar_engine, revision as revision_engine,
+    Diagnostic, EditRequest, EditResponse, MAX_SOURCE_BYTES, Severity, StructureManifest,
+    apply_edit as apply_edit_engine, revision as revision_engine,
 };
 use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
-
 const MAX_DECODED_REQUEST_BYTES: usize = 256 * 1024;
-
 #[derive(Debug, Serialize)]
 struct ValidationResult<'a> {
     valid: bool,
     diagnostics: &'a [Diagnostic],
     structure_manifest: Option<StructureManifest>,
 }
-/// Validate one invoice source in the browser.
 #[wasm_bindgen]
 pub fn validate(source: &str) -> Result<JsValue, JsValue> {
     if source.len() > MAX_SOURCE_BYTES {
-        return serialize_result(false, &[input_limit_diagnostic()], None);
+        return serde_wasm_bindgen::to_value(&ValidationResult {
+            valid: false,
+            diagnostics: &[Diagnostic {
+                severity: Severity::Error,
+                code: "INPUT002".into(),
+                message: "input exceeds source size limit".into(),
+                path: None,
+                field_path: None,
+                line: None,
+                column: None,
+                hint: None,
+                section: None,
+                section_index: None,
+                row: None,
+                column_name: None,
+            }],
+            structure_manifest: None,
+        })
+        .map_err(|e| JsValue::from_str(&e.to_string()));
     }
-
     let report = ttyinv_core::validate(source);
     let manifest = ttyinv_core::structure_manifest(source).ok();
-    serialize_result(report.is_valid(), report.diagnostics(), manifest)
+    serde_wasm_bindgen::to_value(&ValidationResult {
+        valid: report.is_valid(),
+        diagnostics: report.diagnostics(),
+        structure_manifest: manifest,
+    })
+    .map_err(|e| JsValue::from_str(&e.to_string()))
 }
-
-/// Return the deterministic Markdown structure manifest.
 #[wasm_bindgen]
 pub fn structure_manifest(source: &str) -> Result<JsValue, JsValue> {
     if source.len() > MAX_SOURCE_BYTES {
-        return Err(JsValue::from_str("input exceeds the source size limit"));
+        return Err(JsValue::from_str("input exceeds source size limit"));
     }
-    let manifest = ttyinv_core::structure_manifest(source)
+    let m = ttyinv_core::structure_manifest(source)
         .map_err(|_| JsValue::from_str("source has no valid document structure"))?;
-    serde_wasm_bindgen::to_value(&manifest).map_err(|error| JsValue::from_str(&error.to_string()))
+    serde_wasm_bindgen::to_value(&m).map_err(|e| JsValue::from_str(&e.to_string()))
 }
-
-/// Return the deterministic digest of exact source bytes.
 #[wasm_bindgen]
 pub fn revision(source: &str) -> String {
     revision_engine(source)
 }
-
-/// Apply one scalar edit after enforcing the adapter request bound.
 #[wasm_bindgen]
-pub fn apply_scalar(request: JsValue) -> Result<JsValue, JsValue> {
-    let request: ScalarEditRequest = serde_wasm_bindgen::from_value(request)
-        .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    let decoded_bytes = request
+pub fn apply_edit(request: JsValue) -> Result<JsValue, JsValue> {
+    let request: EditRequest =
+        serde_wasm_bindgen::from_value(request).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let operation_size = match &request.operation {
+        ttyinv_core::EditOperation::SetScalar { path, value } => {
+            path.len().checked_add(value.len())
+        }
+        ttyinv_core::EditOperation::MoveSection { .. }
+        | ttyinv_core::EditOperation::SetSectionGap { .. } => Some(0),
+    }
+    .ok_or_else(|| JsValue::from_str("request size overflow"))?;
+    let size = request
         .source
         .len()
         .checked_add(request.base_revision.len())
-        .and_then(|size| size.checked_add(request.path.len()))
-        .and_then(|size| size.checked_add(request.value.len()))
+        .and_then(|x| x.checked_add(operation_size))
+        .and_then(|x| x.checked_add(64))
         .ok_or_else(|| JsValue::from_str("request size overflow"))?;
-    if decoded_bytes > MAX_DECODED_REQUEST_BYTES {
-        return Err(JsValue::from_str("request exceeds the adapter size limit"));
+    if size > MAX_DECODED_REQUEST_BYTES {
+        return Err(JsValue::from_str("request exceeds adapter size limit"));
     }
-    let response: ScalarEditResponse = apply_scalar_engine(request);
-    serde_wasm_bindgen::to_value(&response).map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
-fn input_limit_diagnostic() -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: "INPUT002".to_owned(),
-        message: "input exceeds the source size limit".to_owned(),
-        path: None,
-        field_path: None,
-        line: None,
-        column: None,
-        hint: None,
-        section: None,
-        section_index: None,
-        row: None,
-        column_name: None,
-    }
-}
-
-fn serialize_result(
-    valid: bool,
-    diagnostics: &[Diagnostic],
-    structure_manifest: Option<StructureManifest>,
-) -> Result<JsValue, JsValue> {
-    serde_wasm_bindgen::to_value(&ValidationResult {
-        valid,
-        diagnostics,
-        structure_manifest,
-    })
-    .map_err(|error| JsValue::from_str(&error.to_string()))
+    let response: EditResponse = apply_edit_engine(request);
+    serde_wasm_bindgen::to_value(&response).map_err(|e| JsValue::from_str(&e.to_string()))
 }

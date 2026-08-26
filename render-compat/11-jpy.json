@@ -1,0 +1,85 @@
+{
+  "fixture": "11-jpy",
+  "source": "11-jpy.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable"
+  },
+  "currency": "JPY",
+  "currency_exponent": 0,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:Localization work"
+  ],
+  "sections": [
+    {
+      "title": "Localization work",
+      "body": "table",
+      "row_amounts": [
+        "3600",
+        "500"
+      ],
+      "total": "4100",
+      "currency_exponent": 0,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      }
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "payment",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "4100",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {
+    "currency_rounding": "zero exponent; no fractional yen"
+  },
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

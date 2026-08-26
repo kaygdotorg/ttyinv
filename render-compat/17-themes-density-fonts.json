@@ -1,0 +1,88 @@
+{
+  "fixture": "17-themes-density-fonts",
+  "source": "17-themes-density-fonts.md",
+  "valid": true,
+  "config": {
+    "theme": "midnight",
+    "font": "ibm-plex",
+    "density": "compact"
+  },
+  "currency": "EUR",
+  "currency_exponent": 2,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:Theme sample"
+  ],
+  "sections": [
+    {
+      "title": "Theme sample",
+      "body": "table",
+      "row_amounts": [
+        "42.00"
+      ],
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "total": "42.00"
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "payment",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "42.00",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {
+    "registry_ids": {
+      "theme": "midnight",
+      "font": "ibm-plex",
+      "density": "compact"
+    }
+  },
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

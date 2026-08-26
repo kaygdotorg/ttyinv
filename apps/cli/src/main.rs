@@ -1,357 +1,235 @@
 use std::env;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::process;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use ttyinv_cli::{codes, exit};
-use ttyinv_core::{Diagnostic, MAX_SOURCE_BYTES, Severity, schema_json, validate};
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-
+use ttyinv_cli::exit;
+use ttyinv_core::{
+    EditOperation, EditRequest, MAX_SOURCE_BYTES, Severity, apply_edit, revision, schema_json,
+    structure_manifest, validate,
+};
 fn main() -> ! {
-    process::exit(run(env::args().skip(1)));
+    process::exit(run(env::args().skip(1).collect()))
 }
-
-fn run<I>(args: I) -> i32
-where
-    I: IntoIterator<Item = String>,
-{
-    let args: Vec<String> = args.into_iter().collect();
-    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
-        return print_help();
-    }
-    if args.len() == 1 && matches!(args[0].as_str(), "--version" | "-V") {
-        return write_stdout_line(&format!("ttyinv {VERSION}"));
-    }
-
-    match args.first().map(String::as_str) {
-        Some("schema") => run_schema(&args[1..]),
-        Some("validate") => run_validate(&args[1..]),
-        _ => usage_error("expected one of: schema, validate"),
+fn run(a: Vec<String>) -> i32 {
+    match a.first().map(String::as_str) {
+        Some("validate") => validate_cmd(&a[1..]),
+        Some("schema") => schema_cmd(&a[1..]),
+        Some("sections") => sections_cmd(&a[1..]),
+        Some("edit") => edit_cmd(&a[1..]),
+        Some("--help") | Some("-h") | None => {
+            println!(
+                "ttyinv validate FILE [--json]\\nttyinv schema [--output FILE]\\nttyinv sections FILE [--json]\\nttyinv edit move-section FILE --from N --to N [--stdout|--check|--json]\\nttyinv edit set-gap FILE --section N --gap GAP [--stdout|--check|--json]"
+            );
+            exit::SUCCESS
+        }
+        _ => usage("unknown command"),
     }
 }
-
-fn run_schema(args: &[String]) -> i32 {
-    let mut output: Option<&Path> = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--output" | "-o" => {
-                index += 1;
-                let Some(path) = args.get(index) else {
-                    return usage_error("--output requires a path");
-                };
-                if path.is_empty() || path.starts_with('-') {
-                    return usage_error("--output requires a path");
-                }
-                output = Some(Path::new(path));
-            }
-            "--help" | "-h" => {
-                return if args.len() == 1 {
-                    print_schema_help()
+fn read(path: &str) -> Result<String, i32> {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Err(exit::INPUT),
+    };
+    let mut b = Vec::new();
+    if f.take(MAX_SOURCE_BYTES as u64 + 1)
+        .read_to_end(&mut b)
+        .is_err()
+    {
+        return Err(exit::INPUT);
+    }
+    if b.len() > MAX_SOURCE_BYTES {
+        return Err(exit::INPUT);
+    }
+    String::from_utf8(b).map_err(|_| exit::INPUT)
+}
+fn usage(s: &str) -> i32 {
+    eprintln!("error: {s}");
+    exit::USAGE
+}
+fn schema_cmd(a: &[String]) -> i32 {
+    let Some(i) = a.iter().position(|x| x == "--output") else {
+        print!("{}", schema_json());
+        return exit::SUCCESS;
+    };
+    let Some(path) = a.get(i + 1) else {
+        return usage("--output requires FILE");
+    };
+    if ttyinv_core::atomic_write(Path::new(path), schema_json()).is_err() {
+        return exit::OUTPUT;
+    }
+    exit::SUCCESS
+}
+fn validate_cmd(a: &[String]) -> i32 {
+    let json = a.iter().any(|x| x == "--json");
+    let Some(path) = a.iter().find(|x| !x.starts_with('-')) else {
+        return usage("validate requires FILE");
+    };
+    let Ok(s) = read(path) else {
+        return exit::INPUT;
+    };
+    let r = validate(&s);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"valid":r.is_valid(),"diagnostics":r.diagnostics()})
+        )
+    } else {
+        for d in r.diagnostics() {
+            eprintln!(
+                "{}[{}]: {}",
+                if d.severity == Severity::Error {
+                    "error"
                 } else {
-                    usage_error("unexpected argument for schema")
-                };
-            }
-            _ => {
-                return usage_error("unexpected argument for schema");
-            }
-        }
-        index += 1;
-    }
-
-    match output {
-        Some(path) => match write_atomic(path, schema_json().as_bytes()) {
-            Ok(()) => exit::SUCCESS,
-            Err(()) => {
-                let _ = write_stderr_line("error: cannot write schema output");
-                exit::OUTPUT
-            }
-        },
-        None => write_stdout(schema_json()),
-    }
-}
-
-fn run_validate(args: &[String]) -> i32 {
-    let json_output = args.iter().any(|arg| arg == "--json");
-    let mut input: Option<&str> = None;
-
-    for arg in args {
-        match arg.as_str() {
-            "--json" => {}
-            "--help" | "-h" => {
-                if args.len() == 1 {
-                    return print_validate_help();
-                }
-                return validate_usage_error("unexpected argument for validate", json_output);
-            }
-            value if value.starts_with('-') => {
-                return validate_usage_error("unexpected option for validate", json_output);
-            }
-            "" => {
-                return validate_usage_error("validate requires an input file", json_output);
-            }
-            value if input.is_none() => input = Some(value),
-            _ => {
-                return validate_usage_error("validate requires one input file", json_output);
-            }
+                    "warning"
+                },
+                d.code,
+                d.message
+            )
         }
     }
-
-    let Some(input) = input else {
-        return validate_usage_error("validate requires an input file", json_output);
-    };
-
-    let source = match read_source(input) {
-        Ok(source) => source,
-        Err((code, message)) => {
-            let diagnostic = adapter_diagnostic(code, message, Some(input));
-            if json_output {
-                return write_json_result(false, &[diagnostic], exit::INPUT);
-            }
-            if write_diagnostic_text(&diagnostic).is_err() {
-                return exit::OUTPUT;
-            }
-            return exit::INPUT;
-        }
-    };
-
-    let report = validate(&source);
-    let diagnostics: Vec<Diagnostic> = report
-        .diagnostics()
-        .iter()
-        .map(|diagnostic| with_path(diagnostic, input))
-        .collect();
-    if json_output {
-        return write_json_result(
-            report.is_valid(),
-            &diagnostics,
-            if report.is_valid() {
-                exit::SUCCESS
-            } else {
-                exit::DOCUMENT_INVALID
-            },
-        );
-    }
-
-    for diagnostic in &diagnostics {
-        if write_diagnostic_text(diagnostic).is_err() {
-            return exit::OUTPUT;
-        }
-    }
-
-    if report.is_valid() {
+    if r.is_valid() {
         exit::SUCCESS
     } else {
         exit::DOCUMENT_INVALID
     }
 }
-
-fn read_source(input: &str) -> Result<String, (&'static str, &'static str)> {
-    let file = File::open(input).map_err(|_| (codes::INPUT001, "cannot read input"))?;
-    let mut bytes = Vec::new();
-    file.take((MAX_SOURCE_BYTES as u64) + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| (codes::INPUT001, "cannot read input"))?;
-    if bytes.len() > MAX_SOURCE_BYTES {
-        return Err((codes::INPUT002, "input exceeds the source size limit"));
-    }
-    String::from_utf8(bytes).map_err(|_| (codes::INPUT001, "input is not valid UTF-8"))
-}
-
-fn adapter_diagnostic(code: &str, message: &str, path: Option<&str>) -> Diagnostic {
-    Diagnostic {
-        severity: Severity::Error,
-        code: code.to_owned(),
-        message: message.to_owned(),
-        path: path.map(str::to_owned),
-        field_path: None,
-        line: None,
-        column: None,
-        hint: None,
-        section: None,
-        section_index: None,
-        row: None,
-        column_name: None,
-    }
-}
-
-fn with_path(diagnostic: &Diagnostic, path: &str) -> Diagnostic {
-    Diagnostic {
-        severity: diagnostic.severity,
-        code: diagnostic.code.clone(),
-        message: diagnostic.message.clone(),
-        path: Some(path.to_owned()),
-        field_path: diagnostic.field_path.clone(),
-        line: diagnostic.line,
-        column: diagnostic.column,
-        hint: diagnostic.hint.clone(),
-        section: diagnostic.section.clone(),
-        section_index: diagnostic.section_index,
-        row: diagnostic.row,
-        column_name: diagnostic.column_name.clone(),
-    }
-}
-fn write_diagnostic_text(diagnostic: &Diagnostic) -> Result<(), ()> {
-    let severity = match diagnostic.severity {
-        Severity::Error => "error",
-        Severity::Warning => "warning",
+fn sections_cmd(a: &[String]) -> i32 {
+    let json = a.iter().any(|x| x == "--json");
+    let Some(path) = a.iter().find(|x| !x.starts_with('-')) else {
+        return usage("sections requires FILE");
     };
-    let mut location = diagnostic.path.clone().unwrap_or_default();
-    if let Some(line) = diagnostic.line {
-        location.push_str(&format!(":{line}"));
-    }
-    if let Some(column) = diagnostic.column {
-        location.push_str(&format!(":{column}"));
-    }
-    let prefix = if location.is_empty() {
-        format!("{severity}[{}]", diagnostic.code)
+    let Ok(s) = read(path) else {
+        return exit::INPUT;
+    };
+    let Ok(m) = structure_manifest(&s) else {
+        return exit::DOCUMENT_INVALID;
+    };
+    if json {
+        println!("{}", serde_json::to_string(&m).unwrap_or_default())
     } else {
-        format!("{location}: {severity}[{}]", diagnostic.code)
-    };
-    write_stderr_line(&format!("{prefix}: {}", diagnostic.message))?;
-    if let Some(field_path) = &diagnostic.field_path {
-        write_stderr_line(&format!("field: {field_path}"))?;
+        for x in &m.ordinary_sections {
+            println!(
+                "{}\t{}\t{}\t{}",
+                x.index + 1,
+                x.title,
+                x.body,
+                match x.gap {
+                    ttyinv_core::Gap::None => "none",
+                    ttyinv_core::Gap::Tight => "tight",
+                    ttyinv_core::Gap::Standard => "standard",
+                    ttyinv_core::Gap::Roomy => "roomy",
+                }
+            )
+        }
     }
-    if let Some(section) = &diagnostic.section {
-        write_stderr_line(&format!("section: {section}"))?;
-    }
-    if let Some(hint) = &diagnostic.hint {
-        write_stderr_line(&format!("hint: {hint}"))?;
-    }
-    Ok(())
+    exit::SUCCESS
 }
-
-fn write_json_result(valid: bool, diagnostics: &[Diagnostic], status: i32) -> i32 {
-    let value = serde_json::json!({
-        "valid": valid,
-        "diagnostics": diagnostics,
-    });
-    match serde_json::to_string(&value) {
-        Ok(json) => {
-            let output_status = write_stdout_line(&json);
-            if output_status == exit::SUCCESS {
-                status
-            } else {
-                exit::OUTPUT
+fn edit_cmd(a: &[String]) -> i32 {
+    if a.len() < 2 {
+        return usage("edit requires operation and FILE");
+    };
+    let op = a[0].as_str();
+    let path = &a[1];
+    let Ok(s) = read(path) else {
+        return exit::INPUT;
+    };
+    let mut from = None;
+    let mut to = None;
+    let mut section = None;
+    let mut gap = None;
+    let mut stdout = false;
+    let mut check = false;
+    let mut json = false;
+    let mut i = 2;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--from" => {
+                i += 1;
+                from = a.get(i).and_then(|x| x.parse::<usize>().ok())
+            }
+            "--to" => {
+                i += 1;
+                to = a.get(i).and_then(|x| x.parse::<usize>().ok())
+            }
+            "--section" => {
+                i += 1;
+                section = a.get(i).and_then(|x| x.parse::<usize>().ok())
+            }
+            "--gap" => {
+                i += 1;
+                gap = a.get(i).cloned()
+            }
+            "--stdout" => stdout = true,
+            "--check" => check = true,
+            "--json" => json = true,
+            _ => return usage("unknown edit option"),
+        };
+        i += 1
+    }
+    let operation = match op {
+        "move-section" => {
+            let (Some(from), Some(to)) = (from, to) else {
+                return usage("move-section requires --from and --to");
+            };
+            if from == 0 || to == 0 {
+                return usage("section indices are one-based");
+            }
+            EditOperation::MoveSection {
+                from: from - 1,
+                to: to - 1,
             }
         }
-        Err(_) => exit::OUTPUT,
+        "set-gap" => {
+            let Some(section) = section else {
+                return usage("set-gap requires --section");
+            };
+            if section == 0 {
+                return usage("section indices are one-based");
+            }
+            let g = match gap.as_deref() {
+                Some("none") => ttyinv_core::Gap::None,
+                Some("tight") => ttyinv_core::Gap::Tight,
+                Some("standard") => ttyinv_core::Gap::Standard,
+                Some("roomy") => ttyinv_core::Gap::Roomy,
+                _ => return usage("invalid gap"),
+            };
+            EditOperation::SetSectionGap {
+                section: section - 1,
+                gap: g,
+            }
+        }
+        _ => return usage("unknown edit operation"),
+    };
+    let r = apply_edit(EditRequest {
+        source: s.clone(),
+        base_revision: revision(&s),
+        sequence: 1,
+        operation,
+    });
+    if json {
+        println!("{}", serde_json::to_string(&r).unwrap_or_default());
+        return if r.conflict || !r.diagnostics.is_empty() {
+            exit::DOCUMENT_INVALID
+        } else {
+            exit::SUCCESS
+        };
     }
-}
-
-fn validate_usage_error(message: &str, json_output: bool) -> i32 {
-    if json_output {
-        let diagnostic = adapter_diagnostic(codes::USAGE001, message, None);
-        return write_json_result(false, &[diagnostic], exit::USAGE);
+    if !r.diagnostics.is_empty() {
+        for d in &r.diagnostics {
+            eprintln!("{}: {}", d.code, d.message)
+        }
+        return exit::DOCUMENT_INVALID;
     }
-    usage_error(message)
-}
-fn usage_error(message: &str) -> i32 {
-    if write_stderr_line(&format!("error: {message}")).is_err()
-        || write_stderr_line("Run `ttyinv --help` for usage.").is_err()
-    {
+    if check {
+        return if r.source == s { exit::SUCCESS } else { 1 };
+    }
+    if stdout {
+        print!("{}", r.source);
+        return exit::SUCCESS;
+    }
+    if ttyinv_core::atomic_write(Path::new(path), &r.source).is_err() {
         return exit::OUTPUT;
     }
-    exit::USAGE
-}
-
-fn print_help() -> i32 {
-    let help = format!(
-        "ttyinv {VERSION}\n\nValidate ttyinv invoices.\n\nUsage:\n  ttyinv schema [--output <path>]\n  ttyinv validate [--json] <file>\n  ttyinv --help\n  ttyinv --version\n",
-    );
-    write_stdout(&help)
-}
-
-fn print_schema_help() -> i32 {
-    write_stdout_line("Usage: ttyinv schema [--output <path>]")
-}
-
-fn print_validate_help() -> i32 {
-    write_stdout_line("Usage: ttyinv validate [--json] <file>")
-}
-
-fn write_stdout(text: &str) -> i32 {
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    if handle.write_all(text.as_bytes()).is_err() || handle.flush().is_err() {
-        exit::OUTPUT
-    } else {
-        exit::SUCCESS
-    }
-}
-
-fn write_stdout_line(text: &str) -> i32 {
-    let mut line = String::with_capacity(text.len() + 1);
-    line.push_str(text);
-    line.push('\n');
-    write_stdout(&line)
-}
-
-fn write_stderr_line(text: &str) -> Result<(), ()> {
-    let stderr = io::stderr();
-    let mut handle = stderr.lock();
-    handle.write_all(text.as_bytes()).map_err(|_| ())?;
-    handle.write_all(b"\n").map_err(|_| ())?;
-    handle.flush().map_err(|_| ())
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let file_name = path.file_name().ok_or(())?.to_string_lossy();
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| ())?
-        .as_nanos();
-    let temp_path = parent.join(format!(
-        ".{file_name}.ttyinv-{stamp}-{}",
-        std::process::id()
-    ));
-
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .map_err(|_| ())?;
-        file.write_all(bytes).map_err(|_| ())?;
-        file.sync_all().map_err(|_| ())?;
-        fs::rename(&temp_path, path).map_err(|_| ())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn atomic_write_creates_schema_file() {
-        let path = std::env::temp_dir().join(format!("ttyinv-cli-test-{}", std::process::id()));
-        let _ = fs::remove_file(&path);
-        write_atomic(&path, b"schema").expect("write succeeds");
-        assert_eq!(fs::read(&path).expect("read succeeds"), b"schema");
-        fs::remove_file(path).expect("cleanup succeeds");
-    }
-
-    #[test]
-    fn exit_codes_match_process_contract() {
-        assert_eq!(
-            [
-                exit::SUCCESS,
-                exit::DOCUMENT_INVALID,
-                exit::USAGE,
-                exit::INPUT,
-                exit::OUTPUT,
-                exit::RENDER,
-                exit::INTERNAL,
-            ],
-            [0, 1, 2, 3, 4, 5, 70]
-        );
-    }
+    exit::SUCCESS
 }

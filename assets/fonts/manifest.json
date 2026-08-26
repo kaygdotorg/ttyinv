@@ -1,0 +1,70 @@
+{
+  "schema": 1,
+  "family": "Geist Mono",
+  "upstream": {
+    "project": "Geist",
+    "repository": "https://github.com/vercel/geist-font",
+    "version": "1.7.2",
+    "tag": "v1.7.2",
+    "commit": "a73329da8fc62afc917f796555202e4997f79b7c",
+    "release_url": "https://github.com/vercel/geist-font/releases/tag/v1.7.2",
+    "archive_url": "https://github.com/vercel/geist-font/releases/download/v1.7.2/geist-font-v1.7.2.zip",
+    "archive_sha256": "7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2",
+    "license_url": "https://github.com/vercel/geist-font/blob/v1.7.2/OFL.txt",
+    "license_sha256": "c683bfbcc7e087f5d37a54ef628f10387c451a83ddc459b151403a164ac46c90"
+  },
+  "generation": {
+    "mode": "official-upstream-ttf",
+    "tool": "unzip",
+    "tool_version": "Info-ZIP UnZip 6.00",
+    "command_working_directory": "public",
+    "command": "set -eu\ntmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\ncurl --fail --location --proto '=https' --tlsv1.2 -o \"$tmp/geist-font-v1.7.2.zip\" 'https://github.com/vercel/geist-font/releases/download/v1.7.2/geist-font-v1.7.2.zip'\nprintf '%s  %s\\n' '7fc800d2ac6b92844895196e5041aca55d814c15db70c44f79b3b83ab82b04e2' \"$tmp/geist-font-v1.7.2.zip\" | sha256sum --check -\nunzip -p \"$tmp/geist-font-v1.7.2.zip\" geist-font/GeistMono/ttf/GeistMono-Regular.ttf > assets/fonts/GeistMono-Regular.ttf\nunzip -p \"$tmp/geist-font-v1.7.2.zip\" geist-font/GeistMono/ttf/GeistMono-SemiBold.ttf > assets/fonts/GeistMono-SemiBold.ttf\nunzip -p \"$tmp/geist-font-v1.7.2.zip\" geist-font/OFL.txt > \"$tmp/OFL.txt\"\ncp \"$tmp/OFL.txt\" assets/fonts/OFL.txt\npython3 assets/fonts/verify.py",
+    "reproducibility": "The archive and each extracted member are SHA-256 checked; extraction is byte-for-byte deterministic."
+  },
+  "fonts": [
+    {
+      "name": "Geist Mono Regular",
+      "weight": 400,
+      "path": "assets/fonts/GeistMono-Regular.ttf",
+      "source_member": "geist-font/GeistMono/ttf/GeistMono-Regular.ttf",
+      "source_sha256": "42d8ad2e610238e64e8abfcde3037c63f7850a73928742b7ab7229d897bcb155",
+      "generated_sha256": "42d8ad2e610238e64e8abfcde3037c63f7850a73928742b7ab7229d897bcb155",
+      "sha256": "42d8ad2e610238e64e8abfcde3037c63f7850a73928742b7ab7229d897bcb155",
+      "size_bytes": 148516,
+      "magic": "00010000",
+      "units_per_em": 1000,
+      "ascent": 1005,
+      "descent": -295,
+      "line_gap": 0,
+      "glyph_count": 1159,
+      "printable_ascii": {
+        "range": "U+0020-U+007E",
+        "count": 95,
+        "missing": [],
+        "advance_widths": [600]
+      }
+    },
+    {
+      "name": "Geist Mono SemiBold",
+      "weight": 600,
+      "path": "assets/fonts/GeistMono-SemiBold.ttf",
+      "source_member": "geist-font/GeistMono/ttf/GeistMono-SemiBold.ttf",
+      "source_sha256": "8b6e127117b03046495b40d4227de66bf5f81f7fe2f4546ee578e89738052314",
+      "generated_sha256": "8b6e127117b03046495b40d4227de66bf5f81f7fe2f4546ee578e89738052314",
+      "sha256": "8b6e127117b03046495b40d4227de66bf5f81f7fe2f4546ee578e89738052314",
+      "size_bytes": 149700,
+      "magic": "00010000",
+      "units_per_em": 1000,
+      "ascent": 1005,
+      "descent": -295,
+      "line_gap": 0,
+      "glyph_count": 1159,
+      "printable_ascii": {
+        "range": "U+0020-U+007E",
+        "count": 95,
+        "missing": [],
+        "advance_widths": [600]
+      }
+    }
+  ]
+}

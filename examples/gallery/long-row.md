@@ -1,46 +1,41 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-2026-106
-  title: Long-row layout fixture
-  issued: 2026-06-01
-  due: 2026-06-15
-  currency: EUR
-  locale: en-GB
-from:
-  name: Fabricated Systems Studio
-  address:
-    - 12 Example Lane
-    - Testborough
-    - Ireland
-  identifiers:
-    VAT: IE0000000X
-  email: billing@example.com
-to:
-  name: Demonstration Research GmbH
-  address:
-    - 8 Placeholder Platz
-    - Berlin
-    - Germany
-  identifiers:
-    VAT: DE000000000
-payment:
-  title: Payment
-  methods:
-    - title: Transfer
-      fields:
-        Beneficiary: Fabricated Systems Studio
-        Reference: INV-2026-106
-        Instructions: This fixture contains no real remittance data
+schema: ttyinv/v2
+format: code-comma-dot
+theme: printable
+font: geist-mono
+density: comfortable
 ---
 
-## Verification services
+# Consulting services
 
-| Description | Hours | Rate | Amount (EUR) |
-| --- | ---: | ---: | ---: |
-| Extended compatibility verification covering fabricated operating-system profiles, synthetic browser matrices, deterministic export checks, accessibility review notes, and a deliberately verbose handover summary that must wrap inside one row without clipping or crossing an A4 page boundary | 6 | 150.00 | auto |
-| Concise follow-up check | 1 | 150.00 | auto |
+- Number: INV-2026-001
+- Kind: standard
+- Issued: 2026-01-15
+- Due: 2026-01-29
+- Terms: Net 14
+- Currency: EUR
+
+## From
+
+- Name: Northstar Studio
+- Address: 10 Example Street
+- Address: Berlin
+- Email: billing@example.com
+- Website: https://northstar.example
+- ID.VAT: DE000000000
+
+## Bill to
+
+- Name: Acme Research Ltd
+- Address: 20 Sample Road
+- Address: Berlin
+
+## Contract fees
+
+| Description | Days | Rate | Amount (EUR) |
+|---|---:|---:|---:|
+| Systems consulting and implementation support for the January delivery milestone | 8 | 650.00 | auto |
 
 ## Notes
 
-Every organization, identifier, address, and financial value in this layout fixture is fabricated.
+Payment is due within fourteen days.

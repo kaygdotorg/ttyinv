@@ -1,2286 +1,2248 @@
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use serde::Serialize;
-
+#![forbid(unsafe_code)]
+pub use model::*;
+use rust_decimal::{Decimal, RoundingStrategy};
+use serde::de::Error as _;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::fs;
+use std::path::Path;
 mod model;
-mod scalar_edit;
-
-pub use scalar_edit::{
-    SCALAR_EDIT_LIMITS, ScalarEditLimits, ScalarEditOutcome, ScalarEditRequest, ScalarEditResponse,
-    apply_scalar,
-};
-
-/// Return the deterministic SHA-256 digest of the exact source bytes.
-pub fn revision(source: &str) -> String {
-    let mut state = Sha256::new();
-    state.update(source.as_bytes());
-    state.finish_hex()
+pub const MAX_SOURCE_BYTES: usize = 128 * 1024;
+pub const MAX_EDIT_BYTES: usize = 128 * 1024;
+pub const SCHEMA_JSON: &str = include_str!("../../../schema/ttyinv-v2.schema.json");
+pub fn schema_json() -> &'static str {
+    SCHEMA_JSON
 }
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub severity: Severity,
+    pub code: String,
+    pub message: String,
+    pub path: Option<String>,
+    pub field_path: Option<String>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub hint: Option<String>,
+    pub section: Option<String>,
+    pub section_index: Option<usize>,
+    pub row: Option<usize>,
+    pub column_name: Option<String>,
+}
+impl Diagnostic {
+    fn error(code: &str, msg: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            code: code.into(),
+            message: msg.into(),
+            path: None,
+            field_path: None,
+            line: None,
+            column: None,
+            hint: None,
+            section: None,
+            section_index: None,
+            row: None,
+            column_name: None,
+        }
+    }
+}
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationReport {
+    diagnostics: Vec<Diagnostic>,
+}
+impl ValidationReport {
+    pub fn is_valid(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .all(|d| d.severity != Severity::Error)
+    }
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+    pub fn set_path(&mut self, path: impl Into<String>) {
+        let p = path.into();
+        for d in &mut self.diagnostics {
+            d.path = Some(p.clone())
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FixedBlock {
+    pub name: String,
+    pub present: bool,
+    pub movable: bool,
+    pub page_break_before: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestSection {
+    pub index: usize,
+    pub title: String,
+    pub body: String,
+    pub gap: Gap,
+    pub page_break_before: bool,
+    pub summary_only: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StructureManifest {
+    pub fixed_blocks: Vec<FixedBlock>,
+    pub ordinary_sections: Vec<ManifestSection>,
+}
+impl Document {
+    pub fn structure_manifest(&self) -> StructureManifest {
+        StructureManifest {
+            fixed_blocks: [
+                ("from", false, true),
+                ("bill_to", false, true),
+                (
+                    "settlements",
+                    self.settlements_page_break_before,
+                    self.settlements.is_some(),
+                ),
+                (
+                    "payment",
+                    self.payment_page_break_before,
+                    self.payment.is_some(),
+                ),
+                (
+                    "signature",
+                    self.signature_page_break_before,
+                    self.signature.is_some(),
+                ),
+            ]
+            .into_iter()
+            .map(|(n, page_break_before, present)| FixedBlock {
+                name: n.into(),
+                present,
+                movable: false,
+                page_break_before,
+            })
+            .collect(),
+            ordinary_sections: self
+                .ordinary_sections
+                .iter()
+                .enumerate()
+                .map(|(i, s)| ManifestSection {
+                    index: i,
+                    title: s.title.clone(),
+                    body: match &s.body {
+                        SectionBody::Table(_) => "table",
+                        SectionBody::Prose(p) if p.trim().is_empty() => "empty",
+                        SectionBody::Prose(_) => "prose",
+                    }
+                    .into(),
+                    gap: s.directives.gap,
+                    page_break_before: s.directives.page_break_before,
+                    summary_only: s.directives.summary_only,
+                })
+                .collect(),
+        }
+    }
+}
+pub fn structure_manifest(source: &str) -> Result<StructureManifest, ValidationReport> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(ValidationReport {
+            diagnostics: vec![Diagnostic::error(
+                "LIMIT001",
+                "source exceeds source size limit",
+            )],
+        });
+    }
+    match document(source) {
+        Ok(d) => Ok(d.structure_manifest()),
+        Err(_) => {
+            let normalized = normalized_source(source);
+            let (_, body) = split_frontmatter(&normalized, &mut Vec::new());
+            let lines = body.lines().map(str::to_owned).collect::<Vec<_>>();
+            let blocks = scan_blocks(&lines);
+            let mut ordinary_sections = Vec::new();
+            let mut fixed_blocks = ["from", "bill_to", "settlements", "payment", "signature"]
+                .into_iter()
+                .map(|name| FixedBlock {
+                    name: name.into(),
+                    present: false,
+                    movable: false,
+                    page_break_before: false,
+                })
+                .collect::<Vec<_>>();
+            for block in blocks {
+                let title = lines[block.start][3..].trim().to_owned();
+                if let Some(name) = block.fixed {
+                    let key = name.to_lowercase().replace(' ', "_");
+                    if let Some(f) = fixed_blocks.iter_mut().find(|x| x.name == key) {
+                        f.present = true;
+                    }
+                    continue;
+                }
+                let body_lines = &lines[block.start + 1..block.end];
+                let body = if body_lines.iter().any(|x| x.starts_with('|')) {
+                    "table"
+                } else if body_lines.iter().all(|x| x.trim().is_empty()) {
+                    "empty"
+                } else {
+                    "prose"
+                };
+                let mut directives = SectionDirectives::default();
+                for line in &lines[block.directive_start..block.start] {
+                    match parse_directive(line) {
+                        Some(Directive::Gap(g)) => directives.gap = g,
+                        Some(Directive::Page) => directives.page_break_before = true,
+                        Some(Directive::Summary) => directives.summary_only = true,
+                        None => {}
+                    }
+                }
+                ordinary_sections.push(ManifestSection {
+                    index: ordinary_sections.len(),
+                    title,
+                    body: body.into(),
+                    gap: directives.gap,
+                    page_break_before: directives.page_break_before,
+                    summary_only: directives.summary_only,
+                });
+            }
+            Ok(StructureManifest {
+                fixed_blocks,
+                ordinary_sections,
+            })
+        }
+    }
+}
+pub fn revision(source: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(source.as_bytes());
+    h.finish()
+}
 struct Sha256 {
     state: [u32; 8],
     block: [u8; 64],
-    block_len: usize,
-    bit_len: u64,
+    len: usize,
+    bits: u64,
 }
-
 impl Sha256 {
     fn new() -> Self {
         Self {
             state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
                 0x5be0cd19,
             ],
             block: [0; 64],
-            block_len: 0,
-            bit_len: 0,
+            len: 0,
+            bits: 0,
         }
     }
-
-    fn update(&mut self, input: &[u8]) {
-        for byte in input {
-            self.block[self.block_len] = *byte;
-            self.block_len += 1;
-            self.bit_len = self.bit_len.wrapping_add(8);
-            if self.block_len == self.block.len() {
+    fn update(&mut self, b: &[u8]) {
+        for x in b {
+            self.block[self.len] = *x;
+            self.len += 1;
+            self.bits += 8;
+            if self.len == 64 {
                 self.compress();
-                self.block_len = 0;
+                self.len = 0
             }
         }
     }
-
-    fn finish_hex(mut self) -> String {
-        self.block[self.block_len] = 0x80;
-        self.block_len += 1;
-        if self.block_len > 56 {
-            self.block[self.block_len..].fill(0);
+    fn finish(mut self) -> String {
+        self.block[self.len] = 128;
+        self.len += 1;
+        if self.len > 56 {
+            self.block[self.len..].fill(0);
             self.compress();
-            self.block_len = 0;
+            self.len = 0
         }
-        self.block[self.block_len..56].fill(0);
-        self.block[56..].copy_from_slice(&self.bit_len.to_be_bytes());
+        self.block[self.len..56].fill(0);
+        self.block[56..].copy_from_slice(&self.bits.to_be_bytes());
         self.compress();
-        let mut output = String::with_capacity(64);
-        for word in self.state {
-            use std::fmt::Write as _;
-            let _ = write!(output, "{word:08x}");
+        let mut s = String::new();
+        for x in self.state {
+            let _ = write!(s, "{x:08x}");
         }
-        output
+        s
     }
-
     fn compress(&mut self) {
         const K: [u32; 64] = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25, 0x59f111f1, 0x923f82a4,
             0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
             0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
             0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
             0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
             0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
             0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0c3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
             0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
             0xc67178f2,
         ];
-        let mut words = [0u32; 64];
-        for (index, chunk) in self.block.chunks_exact(4).take(16).enumerate() {
-            let Some(word) = chunk
-                .get(0..4)
-                .and_then(|bytes| bytes.try_into().ok())
-                .map(u32::from_be_bytes)
-            else {
-                return;
-            };
-            words[index] = word;
+        let mut w = [0u32; 64];
+        for (i, c) in self.block.chunks_exact(4).take(16).enumerate() {
+            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]])
         }
-        for index in 16..64 {
-            let s0 = words[index - 15].rotate_right(7)
-                ^ words[index - 15].rotate_right(18)
-                ^ (words[index - 15] >> 3);
-            let s1 = words[index - 2].rotate_right(17)
-                ^ words[index - 2].rotate_right(19)
-                ^ (words[index - 2] >> 10);
-            words[index] = words[index - 16]
-                .wrapping_add(s0)
-                .wrapping_add(words[index - 7])
-                .wrapping_add(s1);
+        for i in 16..64 {
+            let a = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let b = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(a)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(b)
         }
-        let mut working = self.state;
-        for index in 0..64 {
-            let s1 = working[4].rotate_right(6)
-                ^ working[4].rotate_right(11)
-                ^ working[4].rotate_right(25);
-            let choice = (working[4] & working[5]) ^ ((!working[4]) & working[6]);
-            let temp1 = working[7]
+        let mut a = self.state;
+        for i in 0..64 {
+            let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
+            let ch = (a[4] & a[5]) ^ ((!a[4]) & a[6]);
+            let t1 = a[7]
                 .wrapping_add(s1)
-                .wrapping_add(choice)
-                .wrapping_add(K[index])
-                .wrapping_add(words[index]);
-            let s0 = working[0].rotate_right(2)
-                ^ working[0].rotate_right(13)
-                ^ working[0].rotate_right(22);
-            let majority =
-                (working[0] & working[1]) ^ (working[0] & working[2]) ^ (working[1] & working[2]);
-            let temp2 = s0.wrapping_add(majority);
-            working = [
-                temp1.wrapping_add(temp2),
-                working[0],
-                working[1],
-                working[2],
-                working[3].wrapping_add(temp1),
-                working[4],
-                working[5],
-                working[6],
-            ];
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
+            let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
+            let t2 = s0.wrapping_add(maj);
+            a = [
+                t1.wrapping_add(t2),
+                a[0],
+                a[1],
+                a[2],
+                a[3].wrapping_add(t1),
+                a[4],
+                a[5],
+                a[6],
+            ]
         }
-        for (state, value) in self.state.iter_mut().zip(working) {
-            *state = state.wrapping_add(value);
+        for (i, x) in self.state.iter_mut().enumerate() {
+            *x = x.wrapping_add(a[i])
         }
     }
 }
-
-use model::*;
-pub use model::{Money, SourcePosition, SourceSpan};
-use std::collections::BTreeMap;
-
-/// Typed diagnostic taxonomy for the Rust engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Code {
-    Frontmatter001,
-    Yaml001,
-    Schema001,
-    Schema002,
-    Schema003,
-    Currency001,
-    Date001,
-    Date002,
-    Markdown001,
-    Markdown002,
-    Markdown003,
-    Table001,
-    Table002,
-    Table003,
-    Table004,
-    Html001,
-    Limit001,
-}
-
-impl Code {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Frontmatter001 => "FRONTMATTER001",
-            Self::Yaml001 => "YAML001",
-            Self::Schema001 => "SCHEMA001",
-            Self::Schema002 => "SCHEMA002",
-            Self::Schema003 => "SCHEMA003",
-            Self::Currency001 => "CURRENCY001",
-            Self::Date001 => "DATE001",
-            Self::Date002 => "DATE002",
-            Self::Markdown001 => "MARKDOWN001",
-            Self::Markdown002 => "MARKDOWN002",
-            Self::Markdown003 => "MARKDOWN003",
-            Self::Table001 => "TABLE001",
-            Self::Table002 => "TABLE002",
-            Self::Table003 => "TABLE003",
-            Self::Table004 => "TABLE004",
-            Self::Html001 => "HTML001",
-            Self::Limit001 => "LIMIT001",
-        }
-    }
-
-    pub const fn severity(self) -> Severity {
-        match self {
-            Self::Markdown002 | Self::Markdown003 => Severity::Warning,
-            _ => Severity::Error,
-        }
-    }
-
-    pub const fn default_message(self) -> &'static str {
-        match self {
-            Self::Frontmatter001 => "invalid frontmatter delimiter",
-            Self::Yaml001 => "malformed YAML",
-            Self::Schema001 => "invalid frontmatter",
-            Self::Schema002 => "unsupported schema; expected ttyinv/v1",
-            Self::Schema003 => "required value is absent or blank",
-            Self::Currency001 => "currency must be three uppercase ASCII letters",
-            Self::Date001 => "date must be a real YYYY-MM-DD date",
-            Self::Date002 => "due date cannot be before issue date",
-            Self::Markdown001 => "invalid Markdown heading",
-            Self::Markdown002 => "invoice must contain at least one financial table",
-            Self::Markdown003 => "invoice must contain at least one H2 section",
-            Self::Table001 => "table has fewer than two headings",
-            Self::Table002 => "table has no body rows",
-            Self::Table003 => "table row has an invalid width",
-            Self::Table004 => "financial section cannot contain a second table",
-            Self::Html001 => "unsupported raw HTML",
-            Self::Limit001 => "diagnostic limit reached",
-        }
-    }
-}
-
-/// Diagnostic code identifiers emitted by this crate.
-pub mod codes {
-    use super::Code;
-    pub const FRONTMATTER001: &str = Code::Frontmatter001.as_str();
-    pub const YAML001: &str = Code::Yaml001.as_str();
-    pub const SCHEMA001: &str = Code::Schema001.as_str();
-    pub const SCHEMA002: &str = Code::Schema002.as_str();
-    pub const SCHEMA003: &str = Code::Schema003.as_str();
-    pub const CURRENCY001: &str = Code::Currency001.as_str();
-    pub const DATE001: &str = Code::Date001.as_str();
-    pub const DATE002: &str = Code::Date002.as_str();
-    pub const MARKDOWN001: &str = Code::Markdown001.as_str();
-    pub const MARKDOWN002: &str = Code::Markdown002.as_str();
-    pub const MARKDOWN003: &str = Code::Markdown003.as_str();
-    pub const TABLE001: &str = Code::Table001.as_str();
-    pub const TABLE002: &str = Code::Table002.as_str();
-    pub const TABLE003: &str = Code::Table003.as_str();
-    pub const TABLE004: &str = Code::Table004.as_str();
-    pub const HTML001: &str = Code::Html001.as_str();
-    pub const LIMIT001: &str = Code::Limit001.as_str();
-}
-
-/// Diagnostic severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Error,
-    Warning,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Diagnostic {
-    pub severity: Severity,
-    pub code: String,
-    pub message: String,
-    /// Adapter-owned source file path.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// Canonical path in the parsed document tree.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hint: Option<String>,
-    /// Authored H2 title.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub section: Option<String>,
-    /// One-based H2 ordinal.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub section_index: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub row: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column_name: Option<String>,
-}
-
-impl Diagnostic {
-    /// Attach the source path supplied by an adapter.
-    pub fn set_path(&mut self, path: impl Into<String>) {
-        self.path = Some(path.into());
-    }
-}
-
-#[derive(Debug)]
-struct SourceParts<'a> {
-    yaml: &'a str,
-    body: &'a str,
-    body_line: usize,
-}
-
-#[derive(Debug, Clone)]
-struct YamlLocation {
-    path: String,
-    line: usize,
-    column: usize,
-    value_column: usize,
-    value: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BodyLocation {
-    line: usize,
-    column: usize,
-}
-#[derive(Debug)]
-struct LineIndex {
-    starts: Vec<usize>,
-    body_len: usize,
-}
-
-impl LineIndex {
-    fn new(body: &str) -> Self {
-        let mut starts = vec![0];
-        for (offset, byte) in body.bytes().enumerate() {
-            if byte == b'\n' {
-                starts.push(offset + 1);
-            }
-        }
-        Self {
-            starts,
-            body_len: body.len(),
-        }
-    }
-
-    fn location(&self, offset: usize, first_line: usize) -> BodyLocation {
-        let offset = offset.min(self.body_len);
-        let line_index = match self.starts.binary_search(&offset) {
-            Ok(index) => index,
-            Err(index) => index.saturating_sub(1),
-        };
-        BodyLocation {
-            line: first_line + line_index,
-            column: offset - self.starts[line_index] + 1,
-        }
-    }
-}
-
-/// Maximum source size accepted by adapters.
-pub const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
-
-/// The authoritative invoice schema.
-pub const SCHEMA_JSON: &str = include_str!("../../../schema/ttyinv-v1.schema.json");
-/// Return the authoritative invoice schema.
-pub fn schema_json() -> &'static str {
-    SCHEMA_JSON
-}
-
-#[derive(Debug, Serialize)]
-pub struct ValidationReport {
-    diagnostics: Vec<Diagnostic>,
-}
-
-impl ValidationReport {
-    pub fn is_valid(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .all(|diagnostic| diagnostic.severity != Severity::Error)
-    }
-
-    pub fn diagnostics(&self) -> &[Diagnostic] {
-        &self.diagnostics
-    }
-
-    /// Attach one adapter-owned path to every diagnostic.
-    pub fn set_path(&mut self, path: impl Into<String>) {
-        let path = path.into();
-        for diagnostic in &mut self.diagnostics {
-            diagnostic.set_path(path.clone());
-        }
-    }
-}
-
-/// One parsed Markdown section without rendered geometry.
-#[derive(Debug, Clone)]
-pub struct DocumentSection {
-    pub title: String,
-    pub body: DocumentSectionBody,
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone)]
-pub enum DocumentSectionBody {
-    Prose { text: String, span: SourceSpan },
-    Table(DocumentTable),
-}
-
-#[derive(Debug, Clone)]
-pub struct DocumentTable {
-    pub headings: Vec<DocumentCell>,
-    pub rows: Vec<DocumentRow>,
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone)]
-pub struct DocumentRow {
-    pub cells: Vec<DocumentCell>,
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone)]
-pub struct DocumentCell {
-    pub text: String,
-    pub path: String,
-    pub span: SourceSpan,
-}
-
-/// The deterministic structure shared by the Rust engine and browser adapter.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StructureManifest {
-    pub sections: Vec<StructureManifestSection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StructureManifestSection {
-    pub index: usize,
-    pub title: String,
-    pub kind: &'static str,
-    pub headings: Vec<String>,
-    pub body_row_count: usize,
-}
-
-/// Build the structure manifest from one parsed document.
-pub fn structure_manifest(source: &str) -> Result<StructureManifest, ValidationReport> {
-    let parsed = document(source)?;
-    Ok(parsed.structure_manifest())
-}
-
-/// The ordered, typed document consumed by adapters and renderers.
-#[derive(Debug)]
-pub struct Document {
-    pub frontmatter: Frontmatter,
-    pub field_order: Vec<String>,
-    pub sections: Vec<DocumentSection>,
-    /// Source spans indexed by canonical field path.
-    pub spans: BTreeMap<String, SourceSpan>,
-    pub span: SourceSpan,
-}
-
-impl Document {
-    /// Build the deterministic structure manifest without reparsing source.
-    pub fn structure_manifest(&self) -> StructureManifest {
-        StructureManifest {
-            sections: self
-                .sections
-                .iter()
-                .enumerate()
-                .map(|(index, section)| match &section.body {
-                    DocumentSectionBody::Prose { .. } => StructureManifestSection {
-                        index,
-                        title: section.title.clone(),
-                        kind: "prose",
-                        headings: Vec::new(),
-                        body_row_count: 0,
-                    },
-                    DocumentSectionBody::Table(table) => StructureManifestSection {
-                        index,
-                        title: section.title.clone(),
-                        kind: "table",
-                        headings: table
-                            .headings
-                            .iter()
-                            .map(|cell| cell.text.clone())
-                            .collect(),
-                        body_row_count: table.rows.len(),
-                    },
-                })
-                .collect(),
-        }
-    }
-}
-
-/// Parse one complete invoice into the shared document model.
-pub fn document(source: &str) -> Result<Document, ValidationReport> {
-    let parts = split_frontmatter(source).map_err(|message| ValidationReport {
-        diagnostics: vec![diagnostic(codes::FRONTMATTER001, message)],
-    })?;
-    let locations = yaml_locations(parts.yaml, 2);
-    let value =
-        serde_yaml::from_str::<serde_yaml::Value>(parts.yaml).map_err(|_| ValidationReport {
-            diagnostics: vec![diagnostic(codes::YAML001, Code::Yaml001.default_message())],
-        })?;
-    if let Some(field) = missing_required_fields(&value).first() {
-        return Err(ValidationReport {
-            diagnostics: vec![with_yaml_location(
-                diagnostic(codes::SCHEMA003, format!("{field} is required")),
-                locations.iter().find(|item| item.path == *field),
-                *field,
-            )],
-        });
-    }
-    if contains_null(&value) {
-        return Err(ValidationReport {
-            diagnostics: vec![with_yaml_location(
-                diagnostic(codes::SCHEMA001, Code::Schema001.default_message()),
-                locations.first(),
-                "frontmatter",
-            )],
-        });
-    }
-    let field_order = value
-        .as_mapping()
-        .into_iter()
-        .flat_map(|mapping| mapping.keys())
-        .filter_map(serde_yaml::Value::as_str)
-        .map(str::to_owned)
-        .collect();
-    let mut frontmatter =
-        serde_yaml::from_value::<Frontmatter>(value).map_err(|_| ValidationReport {
-            diagnostics: vec![diagnostic(
-                codes::SCHEMA001,
-                Code::Schema001.default_message(),
-            )],
-        })?;
-    let sections = parse_markdown(parts.body, parts.body_line).sections;
-    let spans = node_spans(&locations, &sections);
-    let span = source_span(&locations);
-    set_frontmatter_spans(&mut frontmatter, span);
-    Ok(Document {
-        frontmatter,
-        field_order,
-        sections,
-        spans,
-        span,
-    })
-}
-
-fn node_spans(
-    locations: &[YamlLocation],
-    sections: &[DocumentSection],
-) -> BTreeMap<String, SourceSpan> {
-    let mut spans = BTreeMap::new();
-    for location in locations {
-        let position = SourcePosition {
-            line: location.line,
-            column: location.value_column.max(location.column),
-        };
-        spans.insert(
-            location.path.clone(),
-            SourceSpan {
-                start: position,
-                end: position,
-            },
-        );
-    }
-    for (index, section) in sections.iter().enumerate() {
-        spans.insert(format!("sections[{index}].title"), section.span);
-        match &section.body {
-            DocumentSectionBody::Prose { span, .. } => {
-                spans.insert(format!("sections[{index}].prose"), *span);
-            }
-            DocumentSectionBody::Table(table) => {
-                spans.insert(format!("sections[{index}].table"), table.span);
-                for (row_index, row) in table.rows.iter().enumerate() {
-                    spans.insert(
-                        format!("sections[{index}].table.rows[{row_index}]"),
-                        row.span,
-                    );
-                    for cell in &row.cells {
-                        spans.insert(cell.path.clone(), cell.span);
-                    }
-                }
-                for (column_index, cell) in table.headings.iter().enumerate() {
-                    spans.insert(
-                        format!("sections[{index}].table.columns[{column_index}].name"),
-                        cell.span,
-                    );
-                    spans.insert(
-                        format!("sections[{index}].table.headings[{column_index}]"),
-                        cell.span,
-                    );
-                }
-            }
-        }
-    }
-    spans
-}
-
-fn source_span(locations: &[YamlLocation]) -> SourceSpan {
-    let first = locations
-        .first()
-        .map_or(SourcePosition { line: 1, column: 1 }, |item| {
-            SourcePosition {
-                line: item.line,
-                column: item.column,
-            }
-        });
-    let last = locations.last().map_or(first, |item| SourcePosition {
-        line: item.line,
-        column: item.value_column.max(item.column),
-    });
-    SourceSpan {
-        start: first,
-        end: last,
-    }
-}
-
-fn set_frontmatter_spans(frontmatter: &mut Frontmatter, span: SourceSpan) {
-    frontmatter.span = span;
-    frontmatter.invoice.span = span;
-    frontmatter.from.span = span;
-    frontmatter.to.span = span;
-    if let Some(payment) = frontmatter.payment.as_mut() {
-        payment.span = span;
-        if let Some(methods) = payment.methods.as_mut() {
-            for method in methods {
-                method.span = span;
-            }
-        }
-    }
-    if let Some(settlements) = frontmatter.settlements.as_mut() {
-        for settlement in settlements {
-            settlement.span = span;
-            settlement.paid.span = span;
-            if let Some(received) = settlement.received.as_mut() {
-                received.span = span;
-            }
-        }
-    }
-    if let Some(signature) = frontmatter.signature.as_mut() {
-        signature.span = span;
-    }
-    if let Some(appearance) = frontmatter.appearance.as_mut() {
-        appearance.span = span;
-        if let Some(font) = appearance.font.as_mut() {
-            font.span = span;
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ParsedMarkdown {
-    sections: Vec<DocumentSection>,
-    validation_sections: Vec<ValidationSection>,
-    diagnostics: Vec<Diagnostic>,
-    width_issues: Vec<WidthIssue>,
-    first_body_location: BodyLocation,
-}
-
-#[derive(Debug)]
-struct ValidationSection {
-    title: String,
-    tables: usize,
-    financial_tables: usize,
-    second_table_start: Option<BodyLocation>,
-}
-
-#[derive(Debug)]
-struct ValidationTable {
-    heading_cells: usize,
-    body_rows: usize,
-    headings: Vec<String>,
-    rows: Vec<(usize, BodyLocation)>,
-    section_index: usize,
-    start: BodyLocation,
-}
-
-#[derive(Debug)]
-struct WidthIssue {
-    expected: usize,
-    actual: usize,
-    line: usize,
-    section_index: usize,
-    row: usize,
-    column_name: Option<String>,
-}
-
-fn parse_markdown(body: &str, first_line: usize) -> ParsedMarkdown {
-    let line_index = LineIndex::new(body);
-    let parser = Parser::new_ext(body, Options::ENABLE_TABLES);
-    let mut sections = Vec::new();
-    let mut validation_sections = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut width_issues = Vec::new();
-    let mut heading: Option<(String, usize)> = None;
-    let mut active_table: Option<(usize, DocumentTable)> = None;
-    let mut active_row: Option<(usize, Vec<DocumentCell>, usize)> = None;
-    let mut current_cell: Option<(String, usize)> = None;
-    let mut in_head = false;
-    let mut heading_level: Option<HeadingLevel> = None;
-    let mut heading_text = String::new();
-    let mut current_section: Option<usize> = None;
-    let mut validation_table: Option<ValidationTable> = None;
-    let mut in_table_cell = false;
-    let mut directive_pending = 0usize;
-    let mut last_event_location = BodyLocation {
-        line: first_line,
-        column: 1,
-    };
-
-    for (event, range) in parser.into_offset_iter() {
-        let event_location = body_location(&line_index, range.start, first_line);
-        last_event_location = event_location;
-        if directive_pending > 0
-            && !matches!(
-                event,
-                Event::Start(Tag::Heading {
-                    level: HeadingLevel::H2,
-                    ..
-                }) | Event::Html(_)
-                    | Event::InlineHtml(_)
-                    | Event::End(TagEnd::HtmlBlock)
-                    | Event::Start(Tag::HtmlBlock)
-                    | Event::SoftBreak
-                    | Event::HardBreak
-            )
-        {
-            diagnostics.push(with_body_location(
-                diagnostic(
-                    codes::HTML001,
-                    "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
-                ),
-                event_location,
-            ));
-            directive_pending = 0;
-        }
-        match event {
-            Event::Start(Tag::Heading { level, .. }) => {
-                if level == HeadingLevel::H2 {
-                    heading = Some((String::new(), range.start));
-                    if directive_pending > 0 {
-                        directive_pending = 0;
-                    }
-                }
-                heading_level = Some(level);
-                heading_text.clear();
-            }
-            Event::End(TagEnd::Heading(level)) => {
-                if level == HeadingLevel::H1 {
-                    diagnostics.push(with_body_location(
-                        diagnostic(codes::MARKDOWN001, "H1 headings are not allowed"),
-                        event_location,
-                    ));
-                } else if level == HeadingLevel::H2 {
-                    let (title, start) = heading.take().unwrap_or((String::new(), range.start));
-                    let title = title.trim().to_owned();
-                    let span = span_from_offsets(&line_index, first_line, start, range.end);
-                    sections.push(DocumentSection {
-                        title: title.clone(),
-                        body: DocumentSectionBody::Prose {
-                            text: String::new(),
-                            span,
-                        },
-                        span,
-                    });
-                    if title.is_empty() {
-                        diagnostics.push(with_body_location(
-                            diagnostic(codes::MARKDOWN001, "H2 heading cannot be empty"),
-                            event_location,
-                        ));
-                    } else {
-                        validation_sections.push(ValidationSection {
-                            title,
-                            tables: 0,
-                            financial_tables: 0,
-                            second_table_start: None,
-                        });
-                        current_section = Some(validation_sections.len() - 1);
-                    }
-                }
-                heading_level = None;
-            }
-            Event::Text(text) | Event::Code(text) => {
-                if heading_level.is_some() {
-                    heading_text.push_str(&text);
-                }
-                if let Some((title, _)) = heading.as_mut() {
-                    title.push_str(&text);
-                }
-                if let Some((cell_text, _)) = current_cell.as_mut() {
-                    cell_text.push_str(&text);
-                }
-            }
-            Event::Start(Tag::Table(_)) => {
-                if let Some(section_index) = current_section {
-                    validation_sections[section_index].tables += 1;
-                    if validation_sections[section_index].tables == 2 {
-                        validation_sections[section_index].second_table_start =
-                            Some(event_location);
-                    }
-                    validation_table = Some(ValidationTable {
-                        heading_cells: 0,
-                        body_rows: 0,
-                        headings: Vec::new(),
-                        rows: Vec::new(),
-                        section_index,
-                        start: event_location,
-                    });
-                }
-                if let Some(index) = sections.len().checked_sub(1) {
-                    active_table = Some((
-                        index,
-                        DocumentTable {
-                            headings: Vec::new(),
-                            rows: Vec::new(),
-                            span: span_from_offsets(
-                                &line_index,
-                                first_line,
-                                range.start,
-                                range.end,
-                            ),
-                        },
-                    ));
-                }
-            }
-            Event::Start(Tag::TableHead) => {
-                in_head = true;
-                if let Some(active) = validation_table.as_mut() {
-                    active.headings.clear();
-                }
-            }
-            Event::End(TagEnd::TableHead) => {
-                in_head = false;
-            }
-            Event::Start(Tag::TableRow) => {
-                active_row = Some((0, Vec::new(), range.start));
-                if !in_head {
-                    if let Some(active) = validation_table.as_mut() {
-                        active.rows.push((0, event_location));
-                    }
-                }
-            }
-            Event::Start(Tag::TableCell) => {
-                current_cell = Some((String::new(), range.start));
-                in_table_cell = true;
-                if let Some(active) = validation_table.as_mut() {
-                    if in_head {
-                        active.heading_cells += 1;
-                        active.headings.push(String::new());
-                    } else if let Some((cells, _)) = active.rows.last_mut() {
-                        *cells += 1;
-                    }
-                }
-                if let Some((cells, _, _)) = active_row.as_mut() {
-                    if !in_head {
-                        *cells += 1;
-                    }
-                }
-            }
-            Event::End(TagEnd::TableCell) => {
-                in_table_cell = false;
-                let cell_text = current_cell.as_ref().map(|(text, _)| text.clone());
-                if let Some((text, start)) = current_cell.take() {
-                    let row_index = active_table
-                        .as_ref()
-                        .map_or(0, |(_, table)| table.rows.len());
-                    let cell_index = active_row.as_ref().map_or(0, |(_, cells, _)| cells.len());
-                    let path = if in_head {
-                        format!(
-                            "sections[{}].table.columns[{cell_index}].name",
-                            active_table.as_ref().unwrap().0
-                        )
-                    } else {
-                        format!(
-                            "sections[{}].table.rows[{row_index}].cells[{cell_index}]",
-                            active_table.as_ref().unwrap().0
-                        )
-                    };
-                    let cell = DocumentCell {
-                        text,
-                        path,
-                        span: span_from_offsets(&line_index, first_line, start, range.end),
-                    };
-                    if in_head {
-                        if let Some((_, table)) = active_table.as_mut() {
-                            table.headings.push(cell);
-                        }
-                    } else if let Some((_, cells, _)) = active_row.as_mut() {
-                        cells.push(cell);
-                    }
-                }
-                if in_head {
-                    if let (Some(active), Some(cell_text)) = (validation_table.as_mut(), cell_text)
-                    {
-                        if let Some(heading) = active.headings.last_mut() {
-                            *heading = cell_text;
-                        }
-                    }
-                }
-            }
-            Event::End(TagEnd::TableRow) => {
-                if let Some((_, cells, start)) = active_row.take() {
-                    if !in_head {
-                        let row_index = active_table
-                            .as_ref()
-                            .map_or(0, |(_, table)| table.rows.len());
-                        if let Some((_, table)) = active_table.as_mut() {
-                            table.rows.push(DocumentRow {
-                                cells,
-                                span: span_from_offsets(&line_index, first_line, start, range.end),
-                            });
-                            let _ = row_index;
-                        }
-                    }
-                }
-                if !in_head {
-                    if let Some(active) = validation_table.as_mut() {
-                        active.body_rows += 1;
-                        if let Some((width, _)) = active.rows.last_mut() {
-                            *width = split_table_cells(&body[range.start..range.end]).len();
-                        }
-                    }
-                }
-            }
-            Event::End(TagEnd::Table) => {
-                if let Some(active) = validation_table.take() {
-                    if active.heading_cells < 2 {
-                        let mut item = with_body_location(
-                            diagnostic(codes::TABLE001, Code::Table001.default_message()),
-                            active.start,
-                        );
-                        item.section =
-                            Some(validation_sections[active.section_index].title.clone());
-                        item.section_index = Some((active.section_index + 1) as u32);
-                        diagnostics.push(item);
-                    }
-                    if active.body_rows == 0 {
-                        let mut item = with_body_location(
-                            diagnostic(codes::TABLE002, Code::Table002.default_message()),
-                            active.start,
-                        );
-                        item.section =
-                            Some(validation_sections[active.section_index].title.clone());
-                        item.section_index = Some((active.section_index + 1) as u32);
-                        diagnostics.push(item);
-                    }
-                    if active
-                        .headings
-                        .iter()
-                        .any(|heading| is_amount_heading(heading))
-                    {
-                        validation_sections[active.section_index].financial_tables += 1;
-                    }
-                    for (row, (actual, location)) in active.rows.into_iter().enumerate() {
-                        if actual != active.heading_cells {
-                            let column_index = actual.min(active.heading_cells);
-                            width_issues.push(WidthIssue {
-                                expected: active.heading_cells,
-                                actual,
-                                line: location.line,
-                                section_index: active.section_index,
-                                row: row + 1,
-                                column_name: active.headings.get(column_index).cloned(),
-                            });
-                        }
-                    }
-                }
-                if let Some((index, table)) = active_table.take() {
-                    let table_span =
-                        span_from_offsets(&line_index, first_line, range.start, range.end);
-                    sections[index].body = DocumentSectionBody::Table(DocumentTable {
-                        span: table_span,
-                        ..table
-                    });
-                }
-            }
-            Event::Html(html) | Event::InlineHtml(html) => {
-                let literal = html.as_ref();
-                let directive = literal.trim_end_matches(['\r', '\n'])
-                    == "<!-- ttyinv:page-break-before -->"
-                    || literal.trim_end_matches(['\r', '\n']) == "<!-- ttyinv:summary-only -->";
-                if directive {
-                    directive_pending += 1;
-                } else if !(in_table_cell && literal == "<br>") {
-                    diagnostics.push(with_body_location(
-                        diagnostic(
-                            codes::HTML001,
-                            "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
-                        ),
-                        event_location,
-                    ));
-                    directive_pending = 0;
-                }
-            }
-            _ => {}
-        }
-    }
-    if directive_pending > 0 {
-        diagnostics.push(with_body_location(
-            diagnostic(
-                codes::HTML001,
-                "unsupported raw HTML; only literal <br> in table cells and exact ttyinv directives are allowed",
-            ),
-            last_event_location,
-        ));
-    }
-    for index in 0..sections.len() {
-        let heading_line = sections[index].span.start.line;
-        let body_start = line_index
-            .starts
-            .get(heading_line.saturating_sub(first_line).saturating_add(1))
-            .copied()
-            .unwrap_or(body.len());
-        let body_end = sections
-            .get(index + 1)
-            .and_then(|next| {
-                line_index
-                    .starts
-                    .get(next.span.start.line.saturating_sub(first_line))
-            })
-            .copied()
-            .unwrap_or(body.len());
-        if let DocumentSectionBody::Prose { text, span } = &mut sections[index].body {
-            *text = body
-                .get(body_start..body_end)
-                .unwrap_or_default()
-                .to_owned();
-            *span = span_from_offsets(&line_index, first_line, body_start, body_end);
-        }
-    }
-    ParsedMarkdown {
-        sections,
-        validation_sections,
-        diagnostics,
-        width_issues,
-        first_body_location: first_body_location(&line_index, body, first_line),
-    }
-}
-/// Count source structures without requiring typed frontmatter conversion.
-pub(crate) struct StructuralCounts {
-    pub sections: usize,
-    pub max_rows_per_table: usize,
-    pub rows_total: usize,
-    pub max_columns: usize,
-    pub cells_total: usize,
-    pub frontmatter_depth: usize,
-}
-
-pub(crate) fn structural_counts(source: &str) -> Result<StructuralCounts, &'static str> {
-    let parts = split_frontmatter(source).map_err(|_| "source structure cannot be verified")?;
-    let yaml = serde_yaml::from_str::<serde_yaml::Value>(parts.yaml)
-        .map_err(|_| "frontmatter structure cannot be verified")?;
-    let parsed = parse_markdown(parts.body, parts.body_line);
-    let mut max_rows_per_table: usize = 0;
-    let mut rows_total: usize = 0;
-    let mut max_columns: usize = 0;
-    let mut cells_total: usize = 0;
-    for section in &parsed.sections {
-        if let DocumentSectionBody::Table(table) = &section.body {
-            max_rows_per_table = max_rows_per_table.max(table.rows.len());
-            rows_total = rows_total
-                .checked_add(table.rows.len())
-                .ok_or("source exceeds the row limit")?;
-            max_columns = max_columns.max(table.headings.len());
-            cells_total = cells_total
-                .checked_add(table.headings.len())
-                .ok_or("source exceeds the cell limit")?;
-            for row in &table.rows {
-                cells_total = cells_total
-                    .checked_add(row.cells.len())
-                    .ok_or("source exceeds the cell limit")?;
-            }
-        }
-    }
-    Ok(StructuralCounts {
-        sections: parsed.sections.len(),
-        max_rows_per_table,
-        rows_total,
-        max_columns,
-        cells_total,
-        frontmatter_depth: yaml_depth(&yaml, 0),
-    })
-}
-
-fn yaml_depth(value: &serde_yaml::Value, depth: usize) -> usize {
-    match value {
-        serde_yaml::Value::Sequence(values) => values.iter().fold(depth, |maximum, item| {
-            maximum.max(yaml_depth(item, depth.saturating_add(1)))
-        }),
-        serde_yaml::Value::Mapping(values) => values.iter().fold(depth, |maximum, (key, item)| {
-            maximum
-                .max(yaml_depth(key, depth.saturating_add(1)))
-                .max(yaml_depth(item, depth.saturating_add(1)))
-        }),
-        _ => depth,
-    }
-}
-fn span_from_offsets(
-    line_index: &LineIndex,
-    first_line: usize,
+struct ScannedBlock {
     start: usize,
     end: usize,
-) -> SourceSpan {
-    let start = body_location(line_index, start, first_line);
-    let end = body_location(line_index, end, first_line);
-    SourceSpan {
-        start: SourcePosition {
-            line: start.line,
-            column: start.column,
-        },
-        end: SourcePosition {
-            line: end.line,
-            column: end.column,
-        },
+    directive_start: usize,
+    fixed: Option<&'static str>,
+}
+fn normalized_source(source: &str) -> String {
+    source
+        .strip_prefix('\u{feff}')
+        .unwrap_or(source)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+fn fixed_name(title: &str) -> Option<&'static str> {
+    match title.trim_end() {
+        "From" => Some("From"),
+        "Bill to" => Some("Bill to"),
+        "Settlements" => Some("Settlements"),
+        "Payment" => Some("Payment"),
+        "Signature" => Some("Signature"),
+        _ => None,
     }
 }
-fn code_for(value: &str) -> Option<Code> {
-    Some(match value {
-        codes::FRONTMATTER001 => Code::Frontmatter001,
-        codes::YAML001 => Code::Yaml001,
-        codes::SCHEMA001 => Code::Schema001,
-        codes::SCHEMA002 => Code::Schema002,
-        codes::SCHEMA003 => Code::Schema003,
-        codes::CURRENCY001 => Code::Currency001,
-        codes::DATE001 => Code::Date001,
-        codes::DATE002 => Code::Date002,
-        codes::MARKDOWN001 => Code::Markdown001,
-        codes::MARKDOWN002 => Code::Markdown002,
-        codes::MARKDOWN003 => Code::Markdown003,
-        codes::TABLE001 => Code::Table001,
-        codes::TABLE002 => Code::Table002,
-        codes::TABLE003 => Code::Table003,
-        codes::TABLE004 => Code::Table004,
-        codes::HTML001 => Code::Html001,
-        codes::LIMIT001 => Code::Limit001,
-        _ => return None,
+fn fence_start(line: &str) -> Option<(char, usize)> {
+    let indent = line.chars().take_while(|c| matches!(c, ' ' | '\t')).count();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    let character = rest.chars().next()?;
+    if character != '`' && character != '~' {
+        return None;
+    }
+    let length = rest.chars().take_while(|c| *c == character).count();
+    (length >= 3).then_some((character, length))
+}
+
+fn fence_close(line: &str, fence: (char, usize)) -> bool {
+    let indent = line.chars().take_while(|c| matches!(c, ' ' | '\t')).count();
+    if indent > 3 {
+        return false;
+    }
+    let rest = &line[indent..];
+    let count = rest.chars().take_while(|c| *c == fence.0).count();
+    count >= fence.1 && rest[count..].chars().all(char::is_whitespace)
+}
+
+fn scan_blocks(lines: &[String]) -> Vec<ScannedBlock> {
+    let mut headings = Vec::new();
+    let mut fence = None;
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(current) = fence {
+            if fence_close(line, current) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(start) = fence_start(line) {
+            fence = Some(start);
+            continue;
+        }
+        if line.starts_with("## ") {
+            headings.push(i);
+        }
+    }
+    headings
+        .iter()
+        .enumerate()
+        .map(|(n, &start)| {
+            let end = *headings.get(n + 1).unwrap_or(&lines.len());
+            let mut directive_start = start;
+            while directive_start > 0 {
+                let line = &lines[directive_start - 1];
+                if line.starts_with("<!-- ttyinv:") {
+                    directive_start -= 1;
+                } else {
+                    break;
+                }
+            }
+            ScannedBlock {
+                start,
+                end,
+                directive_start,
+                fixed: fixed_name(&lines[start][3..]),
+            }
+        })
+        .collect()
+}
+fn fixed_range(l: &[String], name: &str) -> Option<(usize, usize)> {
+    scan_blocks(l)
+        .into_iter()
+        .find(|b| b.fixed == Some(name))
+        .map(|b| (b.start, b.end))
+}
+pub fn document(source: &str) -> Result<Document, ValidationReport> {
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err(ValidationReport {
+            diagnostics: vec![Diagnostic::error(
+                "LIMIT001",
+                "source exceeds source size limit",
+            )],
+        });
+    }
+    let normalized = normalized_source(source);
+    let mut e = Vec::new();
+    let (yaml, body) = split_frontmatter(&normalized, &mut e);
+    if !e.is_empty() {
+        return Err(ValidationReport { diagnostics: e });
+    }
+    let c: Config = match serde_yaml::from_str(yaml) {
+        Ok(v) => v,
+        Err(_) => {
+            return Err(ValidationReport {
+                diagnostics: vec![Diagnostic::error(
+                    "SCHEMA001",
+                    "frontmatter must be a valid ttyinv/v2 configuration",
+                )],
+            });
+        }
+    };
+    validate_config(&c, &mut e);
+    let mut l = body.lines().map(str::to_owned).collect::<Vec<_>>();
+    while l.first().is_some_and(|x| x.trim().is_empty()) {
+        l.remove(0);
+    }
+    while l.last().is_some_and(|x| x.trim().is_empty()) {
+        l.pop();
+    }
+    let blocks = scan_blocks(&l);
+    if l.first().map(|x| !x.starts_with("# ")).unwrap_or(true) {
+        e.push(Diagnostic::error("MARKDOWN001", "H1 title is required"));
+        return Err(ValidationReport { diagnostics: e });
+    }
+    let title: String = l[0][2..].trim().into();
+    if title.is_empty() {
+        e.push(Diagnostic::error("SCHEMA001", "H1 title cannot be empty"));
+    }
+    let mut i = 1;
+    let mut m = BTreeMap::new();
+    while i < l.len() && !l[i].starts_with("## ") {
+        let x = l[i].as_str();
+        if x.trim().is_empty() {
+            i += 1;
+            continue;
+        }
+        if let Some((k, v)) = label_line(x) {
+            if !["Number", "Kind", "Issued", "Due", "Terms", "Currency"].contains(&k) {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    format!("unknown metadata label {k}"),
+                ));
+            }
+            if m.insert(k.into(), v.into()).is_some() {
+                e.push(Diagnostic::error(
+                    "SCHEMA004",
+                    "metadata labels must be unique",
+                ));
+            }
+        } else {
+            e.push(Diagnostic::error(
+                "SCHEMA001",
+                "metadata must be a labelled list",
+            ));
+        }
+        i += 1;
+    }
+    let metadata = parse_metadata(&m, &mut e);
+    let mut from = None;
+    let mut bill = None;
+    let mut settlements = None;
+    let mut payment = None;
+    let mut signature = None;
+    let mut footer_breaks = [false; 3];
+    let mut sections = Vec::new();
+    let mut pending = SectionDirectives::default();
+    let mut fixed_order = 0usize;
+    let mut block_no = 0;
+    while block_no < blocks.len() {
+        let block = blocks[block_no];
+        let mut d = block.directive_start;
+        while d < block.start {
+            if let Some(x) = parse_directive(&l[d]) {
+                match x {
+                    Directive::Gap(g) => pending.gap = g,
+                    Directive::Page => pending.page_break_before = true,
+                    Directive::Summary => pending.summary_only = true,
+                }
+            } else if l[d].starts_with("<!-- ttyinv:")
+                || l[d].trim_start().starts_with("<!-- ttyinv:")
+            {
+                e.push(Diagnostic::error(
+                    "DIRECTIVE001",
+                    "unknown or indented directive",
+                ));
+            }
+            d += 1;
+        }
+        let h: String = l[block.start][3..].trim().into();
+        if h.is_empty() {
+            e.push(Diagnostic::error(
+                "MARKDOWN001",
+                "H2 heading cannot be empty",
+            ));
+        }
+        let body_end = blocks
+            .get(block_no + 1)
+            .map_or(block.end, |next| next.directive_start);
+        let b = l[block.start + 1..body_end]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        if block.fixed.is_some()
+            && (pending.gap != Gap::Standard
+                || pending.summary_only
+                || (pending.page_break_before && matches!(block.fixed, Some("From" | "Bill to"))))
+        {
+            e.push(Diagnostic::error(
+                "DIRECTIVE002",
+                "directive is not valid for this fixed block",
+            ));
+        }
+        let rank = match block.fixed {
+            Some("From") => 1,
+            Some("Bill to") => 2,
+            Some("Settlements") => 4,
+            Some("Payment") => 5,
+            Some("Signature") => 6,
+            _ => 3,
+        };
+        if rank < fixed_order {
+            e.push(Diagnostic::error(
+                "SCHEMA006",
+                "fixed blocks must use canonical source order",
+            ))
+        } else if rank > fixed_order {
+            fixed_order = rank
+        }
+        match block.fixed {
+            Some("From") => {
+                if from.is_some() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA006",
+                        "fixed block cannot be repeated",
+                    ));
+                }
+                from = Some(parse_party(&b, &mut e))
+            }
+            Some("Bill to") => {
+                if bill.is_some() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA006",
+                        "fixed block cannot be repeated",
+                    ));
+                }
+                bill = Some(parse_party(&b, &mut e))
+            }
+            Some("Settlements") => {
+                if settlements.is_some() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA006",
+                        "fixed block cannot be repeated",
+                    ));
+                }
+                settlements = parse_table(&b, &mut e);
+                footer_breaks[0] = pending.page_break_before;
+                if let Some(t) = settlements.as_ref() {
+                    validate_settlements(t, &mut e)
+                }
+            }
+            Some("Payment") => {
+                if payment.is_some() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA006",
+                        "fixed block cannot be repeated",
+                    ));
+                }
+                payment = Some(parse_payment(&b, &mut e));
+                footer_breaks[1] = pending.page_break_before;
+            }
+            Some("Signature") => {
+                if signature.is_some() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA006",
+                        "fixed block cannot be repeated",
+                    ));
+                }
+                signature = Some(parse_signature(&b, &mut e));
+                footer_breaks[2] = pending.page_break_before;
+            }
+            _ => {
+                let directives = pending.clone();
+                let body = parse_body(&b, &mut e);
+                let total = match &body {
+                    SectionBody::Table(table) => Some(table_total(
+                        table,
+                        &metadata.currency,
+                        directives.summary_only,
+                        &mut e,
+                    )),
+                    SectionBody::Prose(_) => None,
+                };
+                sections.push(Section {
+                    title: h,
+                    body,
+                    directives,
+                    total,
+                    span: SourceSpan::default(),
+                });
+            }
+        }
+        pending = SectionDirectives::default();
+        block_no += 1;
+    }
+    if from.is_none() {
+        e.push(Diagnostic::error("SCHEMA005", "From section is required"))
+    }
+    if bill.is_none() {
+        e.push(Diagnostic::error(
+            "SCHEMA005",
+            "Bill to section is required",
+        ))
+    }
+    if let (Some(a), Some(b)) = (metadata.due.as_ref(), Some(&metadata.issued)) {
+        if a.0 < b.0 {
+            e.push(Diagnostic::error(
+                "DATE002",
+                "Due date cannot be before Issued date",
+            ))
+        }
+    }
+    let grand_total = sections
+        .iter()
+        .filter_map(|section| section.total)
+        .fold(Decimal::ZERO, |sum, total| sum + total)
+        .round_dp_with_strategy(
+            currency_exponent(&metadata.currency),
+            RoundingStrategy::MidpointNearestEven,
+        );
+    if !e.is_empty() {
+        return Err(ValidationReport { diagnostics: e });
+    }
+    Ok(Document {
+        config: c,
+        title,
+        metadata,
+        from: from.unwrap(),
+        bill_to: bill.unwrap(),
+        ordinary_sections: sections,
+        settlements,
+        settlements_page_break_before: footer_breaks[0],
+        payment,
+        payment_page_break_before: footer_breaks[1],
+        signature,
+        signature_page_break_before: footer_breaks[2],
+        grand_total,
+        source: normalized,
+    })
+}
+fn split_frontmatter<'a>(s: &'a str, e: &mut Vec<Diagnostic>) -> (&'a str, &'a str) {
+    let Some(r) = s.strip_prefix("---\n") else {
+        e.push(Diagnostic::error(
+            "SCHEMA001",
+            "frontmatter must start with ---",
+        ));
+        return ("", s);
+    };
+    let Some(n) = r.find("\n---\n") else {
+        e.push(Diagnostic::error(
+            "SCHEMA001",
+            "frontmatter closing delimiter is missing",
+        ));
+        return ("", s);
+    };
+    (&r[..n], &r[n + 5..])
+}
+fn validate_config(c: &Config, e: &mut Vec<Diagnostic>) {
+    if c.schema != "ttyinv/v2" {
+        e.push(Diagnostic::error("SCHEMA002", "schema must be ttyinv/v2"))
+    }
+    if ![
+        "code-comma-dot",
+        "code-dot-comma",
+        "code-space-comma",
+        "code-indian",
+        "code-plain",
+    ]
+    .contains(&c.format.as_str())
+    {
+        e.push(Diagnostic::error("SCHEMA007", "unsupported format"))
+    }
+    if ![
+        "printable",
+        "paper-white",
+        "graphite",
+        "blueprint",
+        "ledger-pad",
+        "solarized-light",
+        "parchment",
+        "midnight",
+        "nord",
+        "gruvbox-dark",
+    ]
+    .contains(&c.theme.as_str())
+    {
+        e.push(Diagnostic::error("SCHEMA007", "unsupported theme"))
+    }
+    if ![
+        "geist-mono",
+        "cousine",
+        "fira",
+        "ibm-plex",
+        "inconsolata",
+        "jetbrains",
+        "roboto",
+        "source-code",
+        "space",
+        "ubuntu",
+    ]
+    .contains(&c.font.as_str())
+    {
+        e.push(Diagnostic::error("SCHEMA007", "unsupported font"))
+    }
+    if !["comfortable", "compact"].contains(&c.density.as_str()) {
+        e.push(Diagnostic::error("SCHEMA007", "unsupported density"))
+    }
+}
+fn label_line(s: &str) -> Option<(&str, &str)> {
+    let x = s.strip_prefix("- ")?;
+    let (i, v) = x.split_once(':')?;
+    Some((i.trim(), v.trim()))
+}
+fn parse_metadata(m: &BTreeMap<String, String>, e: &mut Vec<Diagnostic>) -> Metadata {
+    let g = |k: &str| m.get(k).cloned().unwrap_or_default();
+    for k in ["Number", "Issued", "Currency"] {
+        if !m.contains_key(k) {
+            e.push(Diagnostic::error("SCHEMA003", format!("{k} is required")))
+        }
+    }
+    let issued = Date::parse(&g("Issued")).unwrap_or_else(|| {
+        e.push(Diagnostic::error(
+            "DATE001",
+            "Issued must be a real YYYY-MM-DD date",
+        ));
+        Date("0000-00-00".into())
+    });
+    let due = m.get("Due").and_then(|x| {
+        let d = Date::parse(x);
+        if d.is_none() {
+            e.push(Diagnostic::error(
+                "DATE001",
+                "Due must be a real YYYY-MM-DD date",
+            ))
+        }
+        d
+    });
+    let cur = g("Currency");
+    if cur.len() != 3 || !cur.bytes().all(|b| b.is_ascii_uppercase()) {
+        e.push(Diagnostic::error(
+            "CURRENCY001",
+            "Currency must be three uppercase ASCII letters",
+        ))
+    }
+    Metadata {
+        number: g("Number"),
+        kind: m.get("Kind").cloned().unwrap_or_else(|| "standard".into()),
+        issued,
+        due,
+        terms: m.get("Terms").cloned(),
+        currency: cur,
+    }
+}
+fn parse_image(s: &str) -> Option<(String, String)> {
+    let x = s.strip_prefix("![")?.split_once("](")?;
+    Some((x.0.into(), x.1.strip_suffix(')')?.into()))
+}
+fn safe_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn parse_party(b: &[&str], e: &mut Vec<Diagnostic>) -> Party {
+    let mut p = Party {
+        name: String::new(),
+        address: vec![],
+        email: None,
+        website: None,
+        identifiers: vec![],
+        logo: None,
+    };
+    let mut saw_field = false;
+
+    for x in b {
+        if x.trim().is_empty() {
+            continue;
+        }
+        if let Some((a, z)) = parse_image(x) {
+            if saw_field {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "party image must precede labelled fields",
+                ));
+            }
+            if a.is_empty() || z.is_empty() || z.chars().any(char::is_whitespace) || z.contains(')')
+            {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "image alt and source are required and source cannot contain whitespace",
+                ))
+            }
+            if p.logo.is_some() {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "party allows one logo image",
+                ))
+            }
+            p.logo = Some(Image { alt: a, src: z });
+        } else if let Some((k, v)) = label_line(x) {
+            saw_field = true;
+            match k {
+                "Name" => {
+                    if !p.name.is_empty() {
+                        e.push(Diagnostic::error("SCHEMA008", "party Name must be unique"))
+                    } else {
+                        p.name = v.into();
+                    }
+                }
+                "Address" => p.address.push(v.into()),
+                "Email" => {
+                    if p.email.is_some() {
+                        e.push(Diagnostic::error("SCHEMA008", "party Email must be unique"))
+                    } else {
+                        p.email = Some(v.into());
+                    }
+                }
+                "Website" => {
+                    if p.website.is_some() {
+                        e.push(Diagnostic::error(
+                            "SCHEMA008",
+                            "party Website must be unique",
+                        ))
+                    } else {
+                        p.website = Some(v.into());
+                    }
+                }
+                k if k.starts_with("ID.") && safe_key(&k[3..]) => {
+                    if p.identifiers.iter().any(|id| id.key == k[3..]) {
+                        e.push(Diagnostic::error(
+                            "SCHEMA008",
+                            "party identifiers must be unique",
+                        ))
+                    } else {
+                        p.identifiers.push(Identifier {
+                            key: k[3..].into(),
+                            value: v.into(),
+                        });
+                    }
+                }
+                k if k.starts_with("ID.") => e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "party identifier key is unsafe",
+                )),
+                _ => e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    format!("unknown party label {k}"),
+                )),
+            }
+        } else {
+            e.push(Diagnostic::error(
+                "SCHEMA008",
+                "party content must be an image or labelled list",
+            ))
+        }
+    }
+    if p.name.is_empty() {
+        e.push(Diagnostic::error("SCHEMA003", "party Name is required"))
+    }
+    p
+}
+fn split_pipe(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cell = String::new();
+    let mut escaped = false;
+    let mut source = s.trim();
+    if let Some(rest) = source.strip_prefix('|') {
+        source = rest;
+    }
+    if let Some(rest) = source.strip_suffix('|') {
+        source = rest;
+    }
+    for c in source.chars() {
+        if escaped {
+            cell.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '|' {
+            out.push(cell.trim().replace("<br>", "\n"));
+            cell.clear();
+        } else {
+            cell.push(c);
+        }
+    }
+    if escaped {
+        cell.push('\\');
+    }
+    out.push(cell.trim().replace("<br>", "\n"));
+    out
+}
+fn valid_separator_cell(value: &str) -> bool {
+    let value = value.trim();
+    let value = value.strip_prefix(':').unwrap_or(value);
+    let value = value.strip_suffix(':').unwrap_or(value);
+    value.len() >= 3 && value.chars().all(|c| c == '-')
+}
+
+fn parse_table(b: &[&str], e: &mut Vec<Diagnostic>) -> Option<Table> {
+    let mut ls = Vec::new();
+    let mut prose = false;
+    for x in b {
+        if x.trim().is_empty() {
+            continue;
+        }
+        if x.starts_with('|') {
+            ls.push(*x);
+        } else {
+            prose = true;
+        }
+    }
+    if prose {
+        e.push(Diagnostic::error("TABLE004", "table cannot contain prose"));
+    }
+    if ls.len() < 2 {
+        e.push(Diagnostic::error(
+            "TABLE001",
+            "table requires heading and separator",
+        ));
+        return None;
+    }
+    let h = split_pipe(ls[0]);
+    let sep = split_pipe(ls[1]);
+    if h.is_empty() || sep.len() != h.len() || sep.iter().any(|x| !valid_separator_cell(x)) {
+        e.push(Diagnostic::error("TABLE001", "invalid table separator"));
+        return None;
+    }
+    let alignments = sep
+        .iter()
+        .map(|x| {
+            let y = x.trim();
+            match (y.starts_with(':'), y.ends_with(':')) {
+                (true, true) => TableAlignment::Center,
+                (true, false) => TableAlignment::Left,
+                (false, true) => TableAlignment::Right,
+                _ => TableAlignment::None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    for x in &ls[2..] {
+        let r = split_pipe(x);
+        if r.len() != h.len() {
+            e.push(Diagnostic::error(
+                "TABLE003",
+                "table row width does not match headings",
+            ));
+        } else {
+            rows.push(r);
+        }
+    }
+    if rows.is_empty() {
+        e.push(Diagnostic::error("TABLE002", "table requires one body row"))
+    }
+    Some(Table {
+        headings: h,
+        alignments,
+        rows,
+    })
+}
+fn validate_settlements(t: &Table, e: &mut Vec<Diagnostic>) {
+    let expected = [
+        "Date",
+        "Paid",
+        "Paid currency",
+        "Received",
+        "Received currency",
+    ];
+    if t.headings.iter().map(String::as_str).collect::<Vec<_>>() != expected {
+        e.push(Diagnostic::error(
+            "TABLE005",
+            "Settlements headings are fixed",
+        ));
+        return;
+    }
+    for r in &t.rows {
+        if r.len() != 5 || Date::parse(&r[0]).is_none() {
+            e.push(Diagnostic::error(
+                "DATE001",
+                "settlement date must be a real YYYY-MM-DD date",
+            ));
+        }
+        for i in [1usize, 3] {
+            if r.get(i)
+                .and_then(|x| Decimal::from_str_exact(x).ok())
+                .is_none()
+            {
+                e.push(Diagnostic::error(
+                    "CURRENCY002",
+                    "settlement amount must be a decimal",
+                ));
+            }
+        }
+        for i in [2usize, 4] {
+            if r.get(i)
+                .is_none_or(|x| x.len() != 3 || !x.bytes().all(|b| b.is_ascii_uppercase()))
+            {
+                e.push(Diagnostic::error(
+                    "CURRENCY001",
+                    "settlement currency must be three uppercase ASCII letters",
+                ));
+            }
+        }
+    }
+}
+pub fn currency_exponent(currency: &str) -> u32 {
+    match currency {
+        "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
+        "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX"
+        | "UYI" | "VND" | "VUV" | "XAF" | "XOF" | "XPF" => 0,
+        _ => 2,
+    }
+}
+fn half_decimal_unit(scale: u32) -> Decimal {
+    if scale >= 28 {
+        Decimal::ZERO
+    } else {
+        Decimal::new(5, scale + 1)
+    }
+}
+
+fn normalized_header(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn matches_amount_header(value: &str, aliases: &[&str]) -> bool {
+    let value = normalized_header(value);
+    aliases.iter().any(|alias| {
+        value == *alias
+            || (value.starts_with(alias)
+                && value[alias.len()..].len() == 3
+                && value[alias.len()..].bytes().all(|b| b.is_ascii_lowercase()))
     })
 }
 
-fn diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
-    let metadata = code_for(code);
-    Diagnostic {
-        severity: metadata.map_or(Severity::Error, Code::severity),
-        code: code.to_owned(),
-        message: message.into(),
-        path: None,
-        field_path: None,
-        line: None,
-        column: None,
-        hint: None,
-        section: None,
-        section_index: None,
-        row: None,
-        column_name: None,
-    }
-}
-
-fn warning(code: &str, message: impl Into<String>) -> Diagnostic {
-    diagnostic(code, message)
-}
-
-fn with_yaml_location(
-    mut diagnostic: Diagnostic,
-    location: Option<&YamlLocation>,
-    field_path: impl Into<String>,
-) -> Diagnostic {
-    diagnostic.field_path = Some(field_path.into());
-    if let Some(location) = location {
-        diagnostic.line = Some(location.line);
-        diagnostic.column = Some(location.value_column.max(location.column));
-    }
-    diagnostic
-}
-
-fn with_body_location(mut diagnostic: Diagnostic, location: BodyLocation) -> Diagnostic {
-    diagnostic.line = Some(location.line);
-    diagnostic.column = Some(location.column);
-    diagnostic
-}
-/// Validate a complete invoice source without performing file IO.
-pub fn validate(source: &str) -> ValidationReport {
-    let parts = match split_frontmatter(source) {
-        Ok(parts) => parts,
-        Err(message) => {
-            let mut item = diagnostic(codes::FRONTMATTER001, message);
-            item.line = Some(1);
-            item.column = Some(1);
-            return ValidationReport {
-                diagnostics: vec![item],
-            };
-        }
-    };
-    let locations = yaml_locations(parts.yaml, 2);
-    let yaml_value = match serde_yaml::from_str::<serde_yaml::Value>(parts.yaml) {
-        Ok(value) => value,
-        Err(error) => {
-            let mut item = diagnostic(codes::YAML001, "malformed YAML");
-            if let Some(location) = error.location() {
-                item.line = Some(location.line() + 1);
-                item.column = Some(location.column());
-                item.field_path = locations
-                    .iter()
-                    .min_by_key(|candidate| candidate.line.abs_diff(item.line.unwrap()))
-                    .map(|candidate| candidate.path.clone());
-            }
-            return ValidationReport {
-                diagnostics: vec![item],
-            };
-        }
-    };
-    let missing = missing_required_fields(&yaml_value);
-    if let Some(field) = missing.first() {
-        return ValidationReport {
-            diagnostics: vec![with_yaml_location(
-                diagnostic(codes::SCHEMA003, format!("{field} is required")),
-                locations.iter().find(|location| location.path == *field),
-                *field,
-            )],
-        };
-    }
-    if contains_null(&yaml_value) {
-        let location = locations
-            .iter()
-            .find(|location| location.value.trim_start().starts_with("null"));
-        let field_path = location
-            .map(|location| location.path.clone())
-            .unwrap_or_else(|| "frontmatter".to_owned());
-        return ValidationReport {
-            diagnostics: vec![with_yaml_location(
-                diagnostic(
-                    codes::SCHEMA001,
-                    "invalid frontmatter: explicit null is not allowed",
-                ),
-                location,
-                field_path,
-            )],
-        };
-    }
-    let frontmatter = match serde_yaml::from_value::<Frontmatter>(yaml_value) {
-        Ok(value) => value,
-        Err(error) => {
-            let error_text = error.to_string();
-            let unknown = error_text.split('`').nth(1).unwrap_or("frontmatter");
-            let location = locations
-                .iter()
-                .find(|location| location.path.ends_with(unknown));
-            let field_path = location
-                .map(|location| location.path.clone())
-                .unwrap_or_else(|| unknown.to_owned());
-            return ValidationReport {
-                diagnostics: vec![with_yaml_location(
-                    diagnostic(codes::SCHEMA001, "invalid frontmatter"),
-                    location,
-                    field_path,
-                )],
-            };
-        }
-    };
-
-    let mut diagnostics = validate_frontmatter(&frontmatter, &locations);
-    let parsed = parse_markdown(parts.body, parts.body_line);
-    diagnostics.extend(validate_markdown(parsed));
-    finish_diagnostics(diagnostics)
-}
-
-fn yaml_locations(yaml: &str, first_line: usize) -> Vec<YamlLocation> {
-    let mut locations: Vec<YamlLocation> = Vec::new();
-    let mut parents: Vec<(usize, String)> = Vec::new();
-    for (index, raw_line) in yaml.lines().enumerate() {
-        let line = raw_line.trim_end_matches('\r');
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+fn payable_amount_column(headings: &[String], currency: &str) -> Result<Option<usize>, ()> {
+    let amount_aliases = ["amount", "total"];
+    let mut candidates = Vec::new();
+    let mut payable = Vec::new();
+    for (index, heading) in headings.iter().enumerate() {
+        if !matches_amount_header(heading, &amount_aliases) {
             continue;
         }
-        let indent = line.len() - line.trim_start().len();
-        let list_item = trimmed.starts_with("- ");
-        let content = trimmed.strip_prefix("- ").unwrap_or(trimmed);
-        let Some(colon) = content.find(':') else {
+        candidates.push(index);
+        let suffix = heading
+            .rsplit_once('(')
+            .and_then(|(_, value)| value.strip_suffix(')'))
+            .map(str::trim);
+        if suffix.is_some_and(|value| value.eq_ignore_ascii_case(currency)) {
+            payable.push(index);
+        }
+    }
+    if payable.len() > 1 {
+        return Err(());
+    }
+    Ok(payable
+        .first()
+        .copied()
+        .or_else(|| candidates.last().copied()))
+}
+
+fn numeric_amount(value: &str) -> Option<Decimal> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.contains(',')
+        || value.contains('e')
+        || value.contains('E')
+        || value.chars().filter(|c| *c == '.').count() > 1
+    {
+        return None;
+    }
+    Decimal::from_str_exact(value).ok()
+}
+
+fn summary_row(value: &str) -> bool {
+    let value = value
+        .chars()
+        .filter(|c| !matches!(c, '*' | '_' | '`'))
+        .collect::<String>()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(value.as_str(), "subtotal" | "total" | "grand total")
+}
+
+fn summary_row_at(row: &[String], headings: &[String]) -> bool {
+    let description = headings
+        .iter()
+        .position(|heading| matches_amount_header(heading, &["description", "item", "service"]))
+        .unwrap_or(0);
+    row.get(description).is_some_and(|value| summary_row(value))
+}
+
+fn table_total(
+    table: &Table,
+    currency: &str,
+    summary_only: bool,
+    e: &mut Vec<Diagnostic>,
+) -> Decimal {
+    let quantity = table
+        .headings
+        .iter()
+        .position(|h| matches_amount_header(h, &["qty", "quantity", "days", "hours", "units"]));
+    let rate = table
+        .headings
+        .iter()
+        .position(|h| matches_amount_header(h, &["rate", "unitprice", "price"]));
+    let amount = match payable_amount_column(&table.headings, currency) {
+        Ok(value) => value,
+        Err(()) => {
+            e.push(Diagnostic::error(
+                "MONEY009",
+                "table has duplicate payable amount columns",
+            ));
+            None
+        }
+    };
+    let Some(amount) = amount else {
+        return Decimal::ZERO;
+    };
+    let exponent = currency_exponent(currency);
+    let mut total = Decimal::ZERO;
+    for row in &table.rows {
+        let Some(value) = row.get(amount) else {
             continue;
         };
-        while parents
-            .last()
-            .is_some_and(|(parent_indent, _)| *parent_indent >= indent)
+        let is_summary = summary_row_at(row, &table.headings);
+        let explicit = numeric_amount(value);
+        if (value.trim().is_empty() || value.trim().eq_ignore_ascii_case("auto"))
+            && (summary_only || is_summary)
         {
-            parents.pop();
+            e.push(Diagnostic::error(
+                "MONEY008",
+                "summary rows require an explicit amount",
+            ));
+            continue;
         }
-        let key = content[..colon].trim().trim_matches(['\'', '"']);
-        let prefix = parents.last().map(|(_, path)| path.as_str());
-        let path = if list_item {
-            let parent = prefix.unwrap_or("");
-            let index = locations
-                .iter()
-                .filter_map(|item: &YamlLocation| {
-                    item.path
-                        .strip_prefix(parent)
-                        .and_then(|rest| rest.strip_prefix('['))
-                        .and_then(|rest| rest.split(']').next())
-                        .and_then(|value| value.parse::<usize>().ok())
-                })
-                .max()
-                .map_or(0, |value| value + 1);
-            if parent.is_empty() {
-                format!("[{index}].{key}")
-            } else {
-                format!("{parent}[{index}].{key}")
+        let value = if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("auto") {
+            let Some(q) = quantity
+                .and_then(|i| row.get(i))
+                .and_then(|x| numeric_amount(x))
+            else {
+                e.push(Diagnostic::error(
+                    "MONEY003",
+                    "auto amount requires a numeric quantity",
+                ));
+                continue;
+            };
+            let Some(r) = rate
+                .and_then(|i| row.get(i))
+                .and_then(|x| numeric_amount(x))
+            else {
+                e.push(Diagnostic::error(
+                    "MONEY003",
+                    "auto amount requires a numeric rate",
+                ));
+                continue;
+            };
+            (q * r).round_dp_with_strategy(exponent, RoundingStrategy::MidpointNearestEven)
+        } else {
+            let Some(explicit) = explicit else {
+                e.push(Diagnostic::error("MONEY002", "amount must be a decimal"));
+                continue;
+            };
+            let rounded =
+                explicit.round_dp_with_strategy(exponent, RoundingStrategy::MidpointNearestEven);
+            if let (Some(q), Some(r)) = (
+                quantity
+                    .and_then(|i| row.get(i))
+                    .and_then(|x| numeric_amount(x)),
+                rate.and_then(|i| row.get(i))
+                    .and_then(|x| numeric_amount(x)),
+            ) {
+                let product = q * r;
+                let difference = (explicit - product).abs();
+                let rate_scale = rate
+                    .and_then(|i| row.get(i))
+                    .and_then(|x| numeric_amount(x))
+                    .map_or(0, |value| value.scale());
+                let rate_half_unit = half_decimal_unit(rate_scale);
+                let amount_half_unit = half_decimal_unit(exponent);
+                let tolerance = q.abs() * rate_half_unit + amount_half_unit;
+                if difference > tolerance {
+                    e.push(Diagnostic::error(
+                        "MONEY004",
+                        "amount differs from quantity times rate",
+                    ));
+                }
             }
-        } else if let Some(parent) = prefix {
-            format!("{parent}.{key}")
-        } else {
-            key.to_owned()
+            rounded
         };
-        let key_column = indent + 1;
-        let value_text = content[colon + 1..].trim_start();
-        let value_is_empty = value_text.is_empty() || value_text.starts_with('#');
-        let value_column = if value_is_empty {
-            key_column
-        } else {
-            indent + colon + 2 + (content[colon + 1..].len() - value_text.len())
-        };
-        locations.push(YamlLocation {
-            path: path.clone(),
-            line: first_line + index,
-            column: key_column,
-            value_column,
-            value: value_text.to_owned(),
-        });
-        let parent_path = if list_item {
-            path.rsplit_once('.')
-                .map_or(path.as_str(), |(prefix, _)| prefix)
-        } else {
-            path.as_str()
-        };
-        if value_is_empty || list_item {
-            parents.push((
-                if list_item {
-                    indent.saturating_sub(1)
-                } else {
-                    indent
-                },
-                parent_path.to_owned(),
+        if !summary_only && !is_summary {
+            total += value;
+        }
+    }
+    total.round_dp_with_strategy(exponent, RoundingStrategy::MidpointNearestEven)
+}
+
+fn parse_body(b: &[&str], e: &mut Vec<Diagnostic>) -> SectionBody {
+    let mut fence = None;
+    let mut has_table = false;
+    let mut nonblank = Vec::new();
+    for line in b {
+        if let Some(current) = fence {
+            if fence_close(line, current) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(start) = fence_start(line) {
+            fence = Some(start);
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("# ") {
+            e.push(Diagnostic::error(
+                "MARKDOWN001",
+                "only the document title may use an H1 heading",
             ));
         }
-    }
-    locations
-}
-
-fn split_frontmatter(source: &str) -> Result<SourceParts<'_>, String> {
-    let mut lines = source.split_inclusive('\n');
-    let first = lines
-        .next()
-        .ok_or_else(|| "invoice must begin with YAML frontmatter delimited by ---".to_owned())?;
-    let first_trimmed = first.trim_end_matches(['\r', '\n']);
-    if first_trimmed.trim_end() != "---" {
-        return Err("invoice must begin with YAML frontmatter delimited by ---".to_owned());
-    }
-    let yaml_start = first.len();
-    let mut offset = yaml_start;
-    for (line_index, line) in lines.enumerate() {
-        let line_number = line_index + 2;
-        let raw = line.trim_end_matches(['\r', '\n']);
-        if raw.trim_end() == "---" {
-            let close_end = offset + line.len();
-            return Ok(SourceParts {
-                yaml: &source[yaml_start..offset],
-                body: &source[close_end..],
-                body_line: line_number + 1,
-            });
+        if trimmed.starts_with("## ") {
+            e.push(Diagnostic::error(
+                "MARKDOWN001",
+                "reserved H2 headings must be column zero",
+            ));
         }
-        offset += line.len();
+        if line.starts_with("<!-- ttyinv:") || trimmed.starts_with("<!-- ttyinv:") {
+            e.push(Diagnostic::error(
+                "DIRECTIVE002",
+                "directive must precede a block heading",
+            ));
+        }
+        if !line.trim().is_empty() {
+            nonblank.push(*line);
+            has_table |= line.starts_with('|');
+        }
     }
-    Err("invoice frontmatter is missing its closing --- delimiter".to_owned())
+    if has_table {
+        if let Some(t) = parse_table(b, e) {
+            return SectionBody::Table(t);
+        }
+    }
+    if nonblank.iter().any(|x| x.starts_with('|')) {
+        e.push(Diagnostic::error(
+            "TABLE004",
+            "mixed table and prose content",
+        ));
+    }
+    SectionBody::Prose(b.join("\n").trim().into())
+}
+fn parse_payment(b: &[&str], e: &mut Vec<Diagnostic>) -> Payment {
+    let mut out = vec![];
+    let mut cur: Option<PaymentMethod> = None;
+    for x in b {
+        if x.trim().is_empty() {
+            continue;
+        }
+        if let Some(t) = x.strip_prefix("### ") {
+            if t.trim().is_empty() {
+                e.push(Diagnostic::error(
+                    "SCHEMA009",
+                    "payment method title cannot be empty",
+                ));
+            }
+            if let Some(m) = cur.take() {
+                if m.fields.is_empty() {
+                    e.push(Diagnostic::error(
+                        "SCHEMA009",
+                        "payment method requires a field",
+                    ));
+                }
+                out.push(m)
+            }
+            cur = Some(PaymentMethod {
+                title: t.trim().into(),
+                fields: vec![],
+            });
+        } else if let Some((k, v)) = label_line(x) {
+            if let Some(m) = cur.as_mut() {
+                if m.fields.iter().any(|field| field.label == k) {
+                    e.push(Diagnostic::error(
+                        "SCHEMA009",
+                        "payment method fields must be unique",
+                    ));
+                } else {
+                    m.fields.push(LabelValue {
+                        label: k.into(),
+                        value: v.into(),
+                    });
+                }
+            } else {
+                e.push(Diagnostic::error(
+                    "SCHEMA009",
+                    "payment fields need a method heading",
+                ))
+            }
+        } else {
+            e.push(Diagnostic::error(
+                "SCHEMA009",
+                "payment content must be H3 headings or labelled fields",
+            ))
+        }
+    }
+    if let Some(m) = cur {
+        if m.fields.is_empty() {
+            e.push(Diagnostic::error(
+                "SCHEMA009",
+                "payment method requires a field",
+            ));
+        }
+        out.push(m)
+    }
+    if out.is_empty() {
+        e.push(Diagnostic::error("SCHEMA009", "Payment requires a method"))
+    }
+    Payment { methods: out }
 }
 
-fn contains_null(value: &serde_yaml::Value) -> bool {
+fn parse_signature(b: &[&str], e: &mut Vec<Diagnostic>) -> Signature {
+    let mut im: Option<Image> = None;
+    let mut n: Option<String> = None;
+    let mut l: Option<String> = None;
+    let mut saw_field = false;
+
+    for x in b {
+        if x.trim().is_empty() {
+            continue;
+        }
+        if let Some((a, z)) = parse_image(x) {
+            if saw_field {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "Signature image must precede labelled fields",
+                ));
+            }
+            if a.is_empty() || z.is_empty() || z.chars().any(char::is_whitespace) || z.contains(')')
+            {
+                e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    "image alt and source are required and source cannot contain whitespace",
+                ))
+            }
+            if im.is_some() {
+                e.push(Diagnostic::error("SCHEMA008", "Signature allows one image"))
+            }
+            im = Some(Image { alt: a, src: z });
+        } else if let Some((k, v)) = label_line(x) {
+            saw_field = true;
+            match k {
+                "Name" => {
+                    if n.is_some() {
+                        e.push(Diagnostic::error(
+                            "SCHEMA008",
+                            "Signature Name must be unique",
+                        ))
+                    } else {
+                        n = Some(v.into());
+                    }
+                }
+                "Label" => {
+                    if l.is_some() {
+                        e.push(Diagnostic::error(
+                            "SCHEMA008",
+                            "Signature Label must be unique",
+                        ))
+                    } else {
+                        l = Some(v.into());
+                    }
+                }
+                _ => e.push(Diagnostic::error(
+                    "SCHEMA008",
+                    format!("unknown signature label {k}"),
+                )),
+            }
+        } else {
+            e.push(Diagnostic::error(
+                "SCHEMA008",
+                "signature content must be an image or labelled list",
+            ))
+        }
+    }
+    if n.as_ref().is_none_or(|x| x.is_empty()) {
+        e.push(Diagnostic::error("SCHEMA003", "Signature Name is required"))
+    }
+    if l.as_ref().is_none_or(|x| x.is_empty()) {
+        e.push(Diagnostic::error(
+            "SCHEMA003",
+            "Signature Label is required",
+        ))
+    }
+    Signature {
+        image: im,
+        name: n.unwrap_or_default(),
+        label: l.unwrap_or_default(),
+    }
+}
+enum Directive {
+    Gap(Gap),
+    Page,
+    Summary,
+}
+fn parse_directive(s: &str) -> Option<Directive> {
+    let x = s.strip_prefix("<!-- ttyinv:")?.strip_suffix(" -->")?;
+    match x {
+        "page-break-before" => Some(Directive::Page),
+        "summary-only" => Some(Directive::Summary),
+        "gap-before none" => Some(Directive::Gap(Gap::None)),
+        "gap-before tight" => Some(Directive::Gap(Gap::Tight)),
+        "gap-before standard" => Some(Directive::Gap(Gap::Standard)),
+        "gap-before roomy" => Some(Directive::Gap(Gap::Roomy)),
+        _ => None,
+    }
+}
+pub fn validate(s: &str) -> ValidationReport {
+    match document(s) {
+        Ok(_) => ValidationReport {
+            diagnostics: vec![],
+        },
+        Err(r) => r,
+    }
+}
+fn gap_str(g: Gap) -> &'static str {
+    match g {
+        Gap::None => "none",
+        Gap::Tight => "tight",
+        Gap::Standard => "standard",
+        Gap::Roomy => "roomy",
+    }
+}
+fn escape_line(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+fn escape_table_cell(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace('\r', "")
+        .replace('\n', "<br>")
+}
+pub fn serialize_markdown(d: &Document) -> String {
+    let mut s = format!(
+        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\ndensity: {}\n---\n\n# {}\n\n",
+        escape_line(&d.config.schema),
+        escape_line(&d.config.format),
+        escape_line(&d.config.theme),
+        escape_line(&d.config.font),
+        escape_line(&d.config.density),
+        escape_line(&d.title)
+    );
+    for (k, v) in [
+        ("Number", d.metadata.number.clone()),
+        ("Kind", d.metadata.kind.clone()),
+        ("Issued", d.metadata.issued.0.clone()),
+        (
+            "Due",
+            d.metadata
+                .due
+                .as_ref()
+                .map_or_else(String::new, |x| x.0.clone()),
+        ),
+        ("Terms", d.metadata.terms.clone().unwrap_or_default()),
+        ("Currency", d.metadata.currency.clone()),
+    ] {
+        if !v.is_empty() {
+            let _ = writeln!(s, "- {k}: {}", escape_line(&v));
+        }
+    }
+    s.push('\n');
+    write_party(&mut s, "From", &d.from);
+    write_party(&mut s, "Bill to", &d.bill_to);
+    for x in &d.ordinary_sections {
+        if x.directives.page_break_before {
+            s.push_str("<!-- ttyinv:page-break-before -->\n")
+        }
+        if x.directives.summary_only {
+            s.push_str("<!-- ttyinv:summary-only -->\n")
+        }
+        if x.directives.gap != Gap::Standard {
+            let _ = writeln!(
+                s,
+                "<!-- ttyinv:gap-before {} -->",
+                gap_str(x.directives.gap)
+            );
+        };
+        let _ = writeln!(s, "## {}\n", x.title);
+        match &x.body {
+            SectionBody::Prose(p) => {
+                s.push_str(p);
+                s.push_str("\n\n")
+            }
+            SectionBody::Table(t) => write_table(&mut s, t),
+        }
+    }
+    if let Some(t) = &d.settlements {
+        if d.settlements_page_break_before {
+            s.push_str("<!-- ttyinv:page-break-before -->\n");
+        }
+        s.push_str("## Settlements\n\n");
+        write_table(&mut s, t)
+    }
+    if let Some(p) = &d.payment {
+        if d.payment_page_break_before {
+            s.push_str("<!-- ttyinv:page-break-before -->\n");
+        }
+        s.push_str("## Payment\n\n");
+        for m in &p.methods {
+            let _ = writeln!(s, "### {}\n", escape_line(&m.title));
+            for f in &m.fields {
+                let _ = writeln!(s, "- {}: {}", escape_line(&f.label), escape_line(&f.value));
+            }
+            s.push('\n')
+        }
+    }
+    if let Some(x) = &d.signature {
+        if d.signature_page_break_before {
+            s.push_str("<!-- ttyinv:page-break-before -->\n");
+        }
+        s.push_str("## Signature\n\n");
+        if let Some(i) = &x.image {
+            let _ = writeln!(s, "![{}]({})\n", escape_line(&i.alt), escape_line(&i.src));
+        }
+        let _ = writeln!(
+            s,
+            "- Name: {}\n- Label: {}",
+            escape_line(&x.name),
+            escape_line(&x.label)
+        );
+    }
+    s
+}
+fn write_party(s: &mut String, t: &str, p: &Party) {
+    let _ = writeln!(s, "## {t}\n");
+    if let Some(i) = &p.logo {
+        let _ = writeln!(s, "![{}]({})\n", escape_line(&i.alt), escape_line(&i.src));
+    }
+    let _ = writeln!(s, "- Name: {}", escape_line(&p.name));
+    for x in &p.address {
+        let _ = writeln!(s, "- Address: {}", escape_line(x));
+    }
+    if let Some(x) = &p.email {
+        let _ = writeln!(s, "- Email: {}", escape_line(x));
+    }
+    if let Some(x) = &p.website {
+        let _ = writeln!(s, "- Website: {}", escape_line(x));
+    }
+    for x in &p.identifiers {
+        let _ = writeln!(s, "- ID.{}: {}", escape_line(&x.key), escape_line(&x.value));
+    }
+    s.push('\n')
+}
+fn write_table(s: &mut String, t: &Table) {
+    s.push('|');
+    for h in &t.headings {
+        let _ = write!(s, " {} |", escape_table_cell(h));
+    }
+    s.push('\n');
+    s.push('|');
+    for (i, _) in t.headings.iter().enumerate() {
+        let alignment = t.alignments.get(i).copied().unwrap_or_default();
+        let marker = match alignment {
+            TableAlignment::Left => ":---",
+            TableAlignment::Center => ":---:",
+            TableAlignment::Right => "---:",
+            TableAlignment::None => "---",
+        };
+        let _ = write!(s, " {marker} |");
+    }
+    s.push('\n');
+    for r in &t.rows {
+        s.push('|');
+        for c in r {
+            let _ = write!(s, " {} |", escape_table_cell(c));
+        }
+        s.push('\n')
+    }
+    s.push('\n')
+}
+fn validate_model(d: &Document) -> Result<(), String> {
+    let source = serialize_markdown(d);
+    if source.len() > MAX_SOURCE_BYTES {
+        return Err("structured document exceeds source size limit".into());
+    }
+    let mut actual =
+        document(&source).map_err(|_| "structured document does not satisfy v2 grammar")?;
+    let mut expected = d.clone();
+    actual.source.clear();
+    expected.source.clear();
+    if actual != expected {
+        return Err("structured document does not round-trip canonically".into());
+    }
+    Ok(())
+}
+fn json_contains_null(value: &serde_json::Value) -> bool {
     match value {
-        serde_yaml::Value::Null => true,
-        serde_yaml::Value::Sequence(values) => values.iter().any(contains_null),
-        serde_yaml::Value::Mapping(values) => values
-            .iter()
-            .any(|(key, value)| contains_null(key) || contains_null(value)),
+        serde_json::Value::Null => true,
+        serde_json::Value::Array(values) => values.iter().any(json_contains_null),
+        serde_json::Value::Object(values) => values.values().any(json_contains_null),
         _ => false,
     }
 }
 
-fn missing_required_fields(value: &serde_yaml::Value) -> Vec<&'static str> {
-    let Some(root) = value.as_mapping() else {
-        return vec!["schema"];
-    };
-    let required_root = ["schema", "invoice", "from", "to"];
-    for key in required_root {
-        let Some(item) = root.get(serde_yaml::Value::String(key.to_owned())) else {
-            return vec![key];
-        };
-        if key == "schema"
-            && (!item.is_string() || item.as_str().is_none_or(|text| text.trim().is_empty()))
-        {
-            return vec!["schema"];
-        }
-        if key != "schema" && item.is_null() {
-            return vec![key];
-        }
+fn yaml_contains_null(value: &serde_yaml::Value) -> bool {
+    match value {
+        serde_yaml::Value::Null => true,
+        serde_yaml::Value::Sequence(values) => values.iter().any(yaml_contains_null),
+        serde_yaml::Value::Mapping(values) => values.values().any(yaml_contains_null),
+        _ => false,
     }
-    let Some(invoice) = root
-        .get(serde_yaml::Value::String("invoice".to_owned()))
-        .and_then(serde_yaml::Value::as_mapping)
-    else {
-        return vec!["invoice"];
-    };
-    for key in ["number", "issued", "currency"] {
-        let path = match key {
-            "number" => "invoice.number",
-            "issued" => "invoice.issued",
-            "currency" => "invoice.currency",
-            _ => unreachable!(),
-        };
-        let Some(item) = invoice.get(serde_yaml::Value::String(key.to_owned())) else {
-            return vec![path];
-        };
-        if item.as_str().is_none_or(|text| text.trim().is_empty()) {
-            return vec![path];
-        }
-    }
-    for key in ["from", "to"] {
-        let path = if key == "from" {
-            "from.name"
-        } else {
-            "to.name"
-        };
-        let Some(party) = root
-            .get(serde_yaml::Value::String(key.to_owned()))
-            .and_then(serde_yaml::Value::as_mapping)
-        else {
-            return vec![path];
-        };
-        let Some(name) = party.get(serde_yaml::Value::String("name".to_owned())) else {
-            return vec![path];
-        };
-        if name.as_str().is_none_or(|text| text.trim().is_empty()) {
-            return vec![path];
-        }
-    }
-    Vec::new()
 }
 
-fn is_valid_date(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 10
-        || bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || !bytes[..4].iter().all(u8::is_ascii_digit)
-        || !bytes[5..7].iter().all(u8::is_ascii_digit)
-        || !bytes[8..].iter().all(u8::is_ascii_digit)
+pub fn parse_json(x: &str) -> Result<Document, serde_json::Error> {
+    let raw: serde_json::Value = serde_json::from_str(x)?;
+    if json_contains_null(&raw) {
+        return Err(serde_json::Error::io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "null values are not valid in a ttyinv/v2 document",
+        )));
+    }
+    let d: Document = serde_json::from_value(raw)?;
+    validate_model(&d).map_err(|m| {
+        serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, m))
+    })?;
+    Ok(d)
+}
+pub fn to_json(d: &Document) -> Result<String, serde_json::Error> {
+    validate_model(d).map_err(|m| {
+        serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, m))
+    })?;
+    serde_json::to_string_pretty(d)
+}
+pub fn parse_yaml(x: &str) -> Result<Document, serde_yaml::Error> {
+    let raw: serde_yaml::Value = serde_yaml::from_str(x)?;
+    if yaml_contains_null(&raw) {
+        return Err(serde_yaml::Error::custom(
+            "null values are not valid in a ttyinv/v2 document",
+        ));
+    }
+    let d: Document = serde_yaml::from_value(raw)?;
+    validate_model(&d).map_err(serde_yaml::Error::custom)?;
+    Ok(d)
+}
+pub fn to_yaml(d: &Document) -> Result<String, serde_yaml::Error> {
+    validate_model(d).map_err(serde_yaml::Error::custom)?;
+    serde_yaml::to_string(d)
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditOperation {
+    SetScalar { path: String, value: String },
+    MoveSection { from: usize, to: usize },
+    SetSectionGap { section: usize, gap: Gap },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditRequest {
+    pub source: String,
+    pub base_revision: String,
+    pub sequence: u64,
+    pub operation: EditOperation,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditResponse {
+    pub source: String,
+    pub revision: String,
+    pub sequence: u64,
+    pub diagnostics: Vec<Diagnostic>,
+    pub conflict: bool,
+}
+pub fn apply_edit(r: EditRequest) -> EditResponse {
+    let rev = revision(&r.source);
+    if r.source.len() > MAX_EDIT_BYTES {
+        return EditResponse {
+            source: r.source,
+            revision: rev,
+            sequence: r.sequence,
+            diagnostics: vec![Diagnostic::error(
+                "LIMIT001",
+                "source exceeds edit size limit",
+            )],
+            conflict: false,
+        };
+    }
+    let operation_size = match &r.operation {
+        EditOperation::SetScalar { path, value } => path.len().saturating_add(value.len()),
+        EditOperation::MoveSection { .. } | EditOperation::SetSectionGap { .. } => 0,
+    };
+    if operation_size > MAX_EDIT_BYTES
+        || r.source.len().saturating_add(operation_size) > MAX_EDIT_BYTES
+    {
+        return EditResponse {
+            source: r.source,
+            revision: rev,
+            sequence: r.sequence,
+            diagnostics: vec![Diagnostic::error(
+                "LIMIT001",
+                "edit request exceeds edit size limit",
+            )],
+            conflict: false,
+        };
+    }
+    if r.base_revision != rev {
+        return EditResponse {
+            source: r.source,
+            revision: rev,
+            sequence: r.sequence,
+            diagnostics: vec![Diagnostic::error("CONFLICT001", "stale source revision")],
+            conflict: true,
+        };
+    }
+    let result = match r.operation {
+        EditOperation::SetScalar { path, value } => set_scalar(&r.source, &path, &value),
+        EditOperation::MoveSection { from, to } => move_section(&r.source, from, to),
+        EditOperation::SetSectionGap { section, gap } => set_gap(&r.source, section, gap),
+    };
+    match result {
+        Ok(source) => {
+            let d = validate(&source).diagnostics().to_vec();
+            EditResponse {
+                revision: revision(&source),
+                source,
+                sequence: r.sequence,
+                diagnostics: d,
+                conflict: false,
+            }
+        }
+        Err(d) => EditResponse {
+            source: r.source,
+            revision: rev,
+            sequence: r.sequence,
+            diagnostics: vec![d],
+            conflict: false,
+        },
+    }
+}
+fn lines(s: &str) -> Vec<String> {
+    normalized_source(s).lines().map(str::to_owned).collect()
+}
+fn ordinary(l: &[String]) -> Vec<ScannedBlock> {
+    scan_blocks(l)
+        .into_iter()
+        .filter(|b| b.fixed.is_none())
+        .collect()
+}
+
+fn source_line_ranges(s: &str) -> Vec<(usize, usize)> {
+    let bytes = s.as_bytes();
+    let mut start = if bytes.starts_with(b"\xef\xbb\xbf") {
+        3
+    } else {
+        0
+    };
+    let mut out = Vec::new();
+    while start < bytes.len() {
+        let mut end = start;
+        while end < bytes.len() && bytes[end] != b'\r' && bytes[end] != b'\n' {
+            end += 1;
+        }
+        out.push((start, end));
+        if end == bytes.len() {
+            break;
+        }
+        start = end + 1;
+        if bytes[end] == b'\r' && start < bytes.len() && bytes[start] == b'\n' {
+            start += 1;
+        }
+    }
+    out
+}
+fn finish(s: &str, l: Vec<String>) -> String {
+    let newline = if s.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut out = l.join(newline);
+    if s.ends_with('\n') || s.ends_with('\r') {
+        out.push_str(newline);
+    }
+    out
+}
+fn is_heading_line(value: &str) -> bool {
+    let value = value.trim_start();
+    let hashes = value.chars().take_while(|c| *c == '#').count();
+    (1..=6).contains(&hashes)
+        && value[hashes..]
+            .chars()
+            .next()
+            .is_some_and(char::is_whitespace)
+}
+
+fn prose_scalar_value(value: &str) -> bool {
+    if value.trim().is_empty() || value.chars().any(|c| c == '\r' || c == '\n') {
+        return false;
+    }
+    let trimmed = value.trim_start();
+    if trimmed.starts_with('|') || trimmed.starts_with("<!-- ttyinv:") {
+        return false;
+    }
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        return false;
+    }
+    if is_heading_line(trimmed)
+        || trimmed.starts_with("- ")
+        || trimmed.starts_with("* ")
+        || trimmed.starts_with("+ ")
+        || trimmed.starts_with("> ")
+        || trimmed.split_once(". ").is_some_and(|(prefix, _)| {
+            !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit())
+        })
     {
         return false;
     }
-    let year = value[..4].parse::<u32>().unwrap_or(0);
-    let month = value[5..7].parse::<u32>().unwrap_or(0);
-    let day = value[8..].parse::<u32>().unwrap_or(0);
-    if year == 0 || !(1..=12).contains(&month) {
-        return false;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    (1..=days).contains(&day)
+    true
 }
 
-fn finish_diagnostics(mut diagnostics: Vec<Diagnostic>) -> ValidationReport {
-    if diagnostics.len() > 200 {
-        diagnostics.truncate(199);
-        diagnostics.push(diagnostic(codes::LIMIT001, "diagnostic limit reached"));
-    }
-    ValidationReport { diagnostics }
-}
-
-fn validate_frontmatter(frontmatter: &Frontmatter, locations: &[YamlLocation]) -> Vec<Diagnostic> {
-    let location = |path: &str| locations.iter().find(|item| item.path == path);
-    let mut diagnostics = Vec::new();
-    if frontmatter.schema != "ttyinv/v1" {
-        diagnostics.push(with_yaml_location(
-            diagnostic(codes::SCHEMA002, "unsupported schema; expected ttyinv/v1"),
-            location("schema"),
-            "schema",
-        ));
-    }
-    for (path, value) in [
-        ("invoice.number", frontmatter.invoice.number.as_str()),
-        ("from.name", frontmatter.from.name.as_str()),
-        ("to.name", frontmatter.to.name.as_str()),
-    ] {
-        if value.trim().is_empty() {
-            diagnostics.push(with_yaml_location(
-                diagnostic(codes::SCHEMA003, format!("{path} is required")),
-                location(path),
-                path,
-            ));
-        }
-    }
-    validate_currency(
-        &frontmatter.invoice.currency,
-        "invoice.currency",
-        location("invoice.currency"),
-        &mut diagnostics,
-    );
-    validate_date(
-        &frontmatter.invoice.issued,
-        "invoice.issued",
-        location("invoice.issued"),
-        &mut diagnostics,
-    );
-    if let Some(due) = &frontmatter.invoice.due {
-        let issue_valid = is_valid_date(&frontmatter.invoice.issued);
-        let due_valid = is_valid_date(due);
-        validate_date(
-            due,
-            "invoice.due",
-            location("invoice.due"),
-            &mut diagnostics,
-        );
-        if issue_valid && due_valid && due < &frontmatter.invoice.issued {
-            diagnostics.push(with_yaml_location(
-                diagnostic(
-                    codes::DATE002,
-                    "invoice.due cannot be before invoice.issued",
-                ),
-                location("invoice.due"),
-                "invoice.due",
-            ));
-        }
-    }
-    if let Some(settlements) = &frontmatter.settlements {
-        for (index, settlement) in settlements.iter().enumerate() {
-            let date_path = format!("settlements[{index}].date");
-            let paid_path = format!("settlements[{index}].paid.currency");
-            validate_date(
-                &settlement.date,
-                &date_path,
-                location(&date_path),
-                &mut diagnostics,
-            );
-            validate_currency(
-                &settlement.paid.currency,
-                &paid_path,
-                location(&paid_path),
-                &mut diagnostics,
-            );
-            if let Some(received) = &settlement.received {
-                let received_path = format!("settlements[{index}].received.currency");
-                validate_currency(
-                    &received.currency,
-                    &received_path,
-                    location(&received_path),
-                    &mut diagnostics,
-                );
-            }
-        }
-    }
-    diagnostics
-}
-
-fn validate_currency(
+#[allow(clippy::result_large_err)]
+fn replace_prose_scalar(
+    source: &str,
+    l: &[String],
+    block: ScannedBlock,
+    blocks: &[ScannedBlock],
     value: &str,
-    path: &str,
-    location: Option<&YamlLocation>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if value.len() != 3 || !value.bytes().all(|byte| byte.is_ascii_uppercase()) {
-        diagnostics.push(with_yaml_location(
-            diagnostic(
-                codes::CURRENCY001,
-                format!("{path} must be a three-letter ASCII currency code"),
-            ),
-            location,
-            path,
+) -> Result<String, Diagnostic> {
+    if !prose_scalar_value(value) {
+        return Err(Diagnostic::error(
+            "EDIT003",
+            "prose value must be one paragraph without structure",
         ));
     }
-}
-
-fn validate_date(
-    value: &str,
-    path: &str,
-    location: Option<&YamlLocation>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if !is_valid_date(value) {
-        diagnostics.push(with_yaml_location(
-            diagnostic(
-                codes::DATE001,
-                format!("{path} must be a real YYYY-MM-DD date"),
-            ),
-            location,
-            path,
-        ));
-    }
-}
-
-fn validate_markdown(parsed: ParsedMarkdown) -> Vec<Diagnostic> {
-    let mut diagnostics = parsed.diagnostics;
-    for issue in &parsed.width_issues {
-        let mut item = with_body_location(
-            diagnostic(
-                codes::TABLE003,
-                format!(
-                    "table row has {} cells; expected {}",
-                    issue.actual, issue.expected
-                ),
-            ),
-            BodyLocation {
-                line: issue.line,
-                column: 1,
-            },
-        );
-        item.section = Some(
-            parsed.validation_sections[issue.section_index]
-                .title
-                .clone(),
-        );
-        item.section_index = Some((issue.section_index + 1) as u32);
-        item.row = Some(issue.row);
-        item.column_name = issue.column_name.clone();
-        diagnostics.push(item);
-    }
-    let financial_table_count: usize = parsed
-        .validation_sections
+    let body_end = blocks
         .iter()
-        .map(|section| section.financial_tables)
-        .sum();
-    if financial_table_count == 0 {
-        diagnostics.push(with_body_location(
-            warning(
-                codes::MARKDOWN002,
-                "invoice must contain at least one financial table",
-            ),
-            parsed.first_body_location,
-        ));
+        .find(|next| next.start > block.start)
+        .map_or(block.end, |next| next.directive_start);
+    let body_start = block.start.saturating_add(1);
+    if body_start >= body_end || body_end > l.len() {
+        return Err(Diagnostic::error("EDIT003", "section target is not prose"));
     }
-    if parsed.validation_sections.is_empty() {
-        diagnostics.push(with_body_location(
-            warning(
-                codes::MARKDOWN003,
-                "invoice must contain at least one H2 section",
-            ),
-            parsed.first_body_location,
-        ));
-    }
-    for (section_index, section) in parsed.validation_sections.iter().enumerate() {
-        if section.financial_tables > 0 && section.tables > 1 {
-            let mut item = with_body_location(
-                diagnostic(codes::TABLE004, Code::Table004.default_message()),
-                section
-                    .second_table_start
-                    .unwrap_or(parsed.first_body_location),
-            );
-            item.section = Some(section.title.clone());
-            item.section_index = Some((section_index + 1) as u32);
-            diagnostics.push(item);
-        }
-    }
-    diagnostics
-}
-fn body_location(line_index: &LineIndex, offset: usize, first_line: usize) -> BodyLocation {
-    line_index.location(offset, first_line)
-}
-
-fn first_body_location(line_index: &LineIndex, body: &str, first_line: usize) -> BodyLocation {
-    body_location(
-        line_index,
-        body.find(|character: char| !character.is_whitespace())
-            .unwrap_or(0),
-        first_line,
-    )
-}
-
-fn is_amount_heading(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized == "amount" {
-        return true;
-    }
-    let Some(currency) = normalized
-        .strip_prefix("amount (")
-        .and_then(|value| value.strip_suffix(')'))
-    else {
-        return false;
+    let body = &l[body_start..body_end];
+    let Some(first) = body.iter().position(|line| !line.trim().is_empty()) else {
+        return Err(Diagnostic::error("EDIT003", "section target is not prose"));
     };
-    currency.len() == 3 && currency.bytes().all(|byte| byte.is_ascii_alphabetic())
+    let last = body
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .expect("first nonblank line exists");
+    if body[first..=last].iter().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with('|') || trimmed.starts_with("<!-- ttyinv:") || is_heading_line(trimmed)
+    }) {
+        return Err(Diagnostic::error("EDIT003", "section target is not prose"));
+    }
+    let ranges = source_line_ranges(source);
+    let content_start = body_start + first;
+    let content_end = body_start + last + 1;
+    let (start, _) = ranges
+        .get(content_start)
+        .copied()
+        .ok_or_else(|| Diagnostic::error("EDIT003", "section target is not prose"))?;
+    let (_, end) = ranges
+        .get(content_end - 1)
+        .copied()
+        .ok_or_else(|| Diagnostic::error("EDIT003", "section target is not prose"))?;
+    let mut out = String::with_capacity(source.len() + value.len());
+    out.push_str(&source[..start]);
+    out.push_str(value);
+    out.push_str(&source[end..]);
+    Ok(out)
 }
-fn split_table_cells(line: &str) -> Vec<String> {
-    let mut value = line.trim();
-    if let Some(stripped) = value.strip_prefix('|') {
-        value = stripped;
+#[allow(clippy::result_large_err)]
+fn move_section(s: &str, a: usize, b: usize) -> Result<String, Diagnostic> {
+    let mut l = lines(s);
+    let blocks = scan_blocks(&l);
+    let ordinary_blocks = blocks
+        .iter()
+        .filter(|x| x.fixed.is_none())
+        .collect::<Vec<_>>();
+    if a >= ordinary_blocks.len() || b >= ordinary_blocks.len() {
+        return Err(Diagnostic::error(
+            "EDIT002",
+            "section index is out of bounds",
+        ));
     }
-    if value.ends_with('|') && !value.ends_with(r"\|") {
-        value = &value[..value.len() - 1];
+    if a == b {
+        return Ok(s.into());
     }
-    let mut cells = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-    for character in value.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            current.push(character);
-            escaped = true;
-        } else if character == '|' {
-            cells.push(current.trim().to_owned());
-            current.clear();
-        } else {
-            current.push(character);
+    let selected = *ordinary_blocks[a];
+    let selected_end = blocks
+        .iter()
+        .find(|x| x.start == selected.start)
+        .and_then(|x| {
+            blocks
+                .iter()
+                .find(|n| n.start > x.start)
+                .map(|n| n.directive_start)
+        })
+        .unwrap_or(selected.end);
+    let chunk = l[selected.directive_start..selected_end].to_vec();
+    l.drain(selected.directive_start..selected_end);
+    let blocks_after = scan_blocks(&l);
+    let dest = blocks_after
+        .iter()
+        .filter(|x| x.fixed.is_none())
+        .collect::<Vec<_>>();
+    let at = if b < dest.len() {
+        dest[b].directive_start
+    } else {
+        blocks_after
+            .iter()
+            .find(|x| matches!(x.fixed, Some("Settlements" | "Payment" | "Signature")))
+            .map_or(l.len(), |x| x.directive_start)
+    };
+    l.splice(at..at, chunk);
+    Ok(finish(s, l))
+}
+#[allow(clippy::result_large_err)]
+fn set_gap(s: &str, n: usize, g: Gap) -> Result<String, Diagnostic> {
+    let mut l = lines(s);
+    let blocks = scan_blocks(&l);
+    let ordinary_blocks = blocks
+        .iter()
+        .filter(|x| x.fixed.is_none())
+        .collect::<Vec<_>>();
+    let Some(block) = ordinary_blocks.get(n).copied() else {
+        return Err(Diagnostic::error(
+            "EDIT002",
+            "section index is out of bounds",
+        ));
+    };
+    let mut remove = Vec::new();
+    for (i, line) in l
+        .iter()
+        .enumerate()
+        .take(block.start)
+        .skip(block.directive_start)
+    {
+        if matches!(parse_directive(line), Some(Directive::Gap(_))) {
+            remove.push(i);
         }
     }
-    cells.push(current.trim().to_owned());
-    cells
+    for i in remove.into_iter().rev() {
+        l.remove(i);
+    }
+    if g != Gap::Standard {
+        let refreshed = scan_blocks(&l);
+        let target = refreshed
+            .iter()
+            .filter(|x| x.fixed.is_none())
+            .nth(n)
+            .map_or(l.len(), |x| x.start);
+        l.insert(target, format!("<!-- ttyinv:gap-before {} -->", gap_str(g)));
+    }
+    Ok(finish(s, l))
 }
-
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-    #[test]
-    fn line_index_preserves_byte_columns_across_unicode_and_newlines() {
-        let body = "α\nbeta\n\néx";
-        let index = LineIndex::new(body);
-        assert_eq!(index.starts, vec![0, 3, 8, 9]);
-        for (offset, expected) in [
-            (
-                0,
-                BodyLocation {
-                    line: 10,
-                    column: 1,
-                },
-            ),
-            (
-                2,
-                BodyLocation {
-                    line: 10,
-                    column: 3,
-                },
-            ),
-            (
-                3,
-                BodyLocation {
-                    line: 11,
-                    column: 1,
-                },
-            ),
-            (
-                7,
-                BodyLocation {
-                    line: 11,
-                    column: 5,
-                },
-            ),
-            (
-                8,
-                BodyLocation {
-                    line: 12,
-                    column: 1,
-                },
-            ),
-            (
-                9,
-                BodyLocation {
-                    line: 13,
-                    column: 1,
-                },
-            ),
-            (
-                12,
-                BodyLocation {
-                    line: 13,
-                    column: 4,
-                },
-            ),
-        ] {
-            assert_eq!(body_location(&index, offset, 10), expected);
+#[allow(clippy::result_large_err)]
+fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
+    let mut l = lines(s);
+    if p == "title" {
+        if let Some(x) = l.iter_mut().find(|x| x.starts_with("# ")) {
+            *x = format!("# {}", escape_line(v));
+            return Ok(finish(s, l));
         }
     }
-
-    #[test]
-    fn line_index_scales_structurally_with_body_lines() {
-        let rows = 10_000;
-        let body = "row\n".repeat(rows);
-        let index = LineIndex::new(&body);
-        assert_eq!(index.starts.len(), rows + 1);
-        assert_eq!(
-            body_location(&index, (rows / 2) * 4, 7),
-            BodyLocation {
-                line: 7 + rows / 2,
-                column: 1
+    if let Some(k) = p.strip_prefix("metadata.") {
+        let label = match k {
+            "number" => "Number",
+            "kind" => "Kind",
+            "issued" => "Issued",
+            "due" => "Due",
+            "terms" => "Terms",
+            "currency" => "Currency",
+            _ => "",
+        };
+        if !label.is_empty() {
+            let metadata_end = scan_blocks(&l)
+                .iter()
+                .find(|block| block.fixed == Some("From"))
+                .map_or(0, |block| block.start);
+            if metadata_end < 1 {
+                return Err(Diagnostic::error("EDIT004", "metadata field is absent"));
             }
-        );
-        assert_eq!(
-            body_location(&index, body.len(), 7),
-            BodyLocation {
-                line: 7 + rows,
-                column: 1
+            return replace_label(&mut l, 1, metadata_end, label, None, v).map(|_| finish(s, l));
+        }
+    }
+    if let Some(rest) = p.strip_prefix("sections[") {
+        if let Some((n, tail)) = rest.split_once(']') {
+            let n: usize = n
+                .parse()
+                .map_err(|_| Diagnostic::error("EDIT003", "invalid section path"))?;
+            let rs = ordinary(&l);
+            if n >= rs.len() {
+                return Err(Diagnostic::error(
+                    "EDIT002",
+                    "section index is out of bounds",
+                ));
             }
-        );
-    }
-
-    fn source(frontmatter: &str, body: &str) -> String {
-        format!("---\n{frontmatter}\n---\n{body}")
-    }
-
-    fn valid_frontmatter() -> &'static str {
-        "schema: ttyinv/v1\ninvoice:\n  number: INV-1\n  issued: 2026-01-01\n  due: 2026-01-02\n  currency: EUR\nfrom:\n  name: Sender\nto:\n  name: Receiver"
-    }
-
-    fn valid_body() -> &'static str {
-        "\n## Services\n\n| Description | Amount (EUR) |\n| --- | ---: |\n| Work | 10 |\n"
-    }
-
-    #[test]
-    fn structure_manifest_is_deterministic_and_exact() {
-        let source = source(valid_frontmatter(), valid_body());
-        let first = structure_manifest(&source).expect("valid manifest");
-        let second = structure_manifest(&source).expect("valid manifest");
-        assert_eq!(first, second);
-        assert_eq!(first.sections.len(), 1);
-        assert_eq!(first.sections[0].index, 0);
-        assert_eq!(first.sections[0].title, "Services");
-        assert_eq!(first.sections[0].kind, "table");
-        assert_eq!(first.sections[0].headings, ["Description", "Amount (EUR)"]);
-        assert_eq!(first.sections[0].body_row_count, 1);
-    }
-
-    #[test]
-    fn prose_manifest_span_points_to_body() {
-        let source = source(
-            valid_frontmatter(),
-            "\n## Notes\n\nFirst line.\nSecond line.\n",
-        );
-        let parsed = document(&source).expect("valid document");
-        let span = parsed.spans.get("sections[0].prose").expect("prose span");
-        assert_ne!(*span, parsed.sections[0].span);
-    }
-
-    #[test]
-    fn embedded_schema_is_json() {
-        let value: serde_json::Value = serde_json::from_str(SCHEMA_JSON).expect("schema JSON");
-        assert_eq!(
-            value["$id"],
-            "https://github.com/kaygdotorg/ttyinv/blob/main/schema/ttyinv-v1.schema.json"
-        );
-        assert_eq!(schema_json(), SCHEMA_JSON);
-    }
-
-    #[test]
-    fn simple_example_is_valid() {
-        let source = include_str!("../../../examples/simple.md");
-        assert!(
-            validate(source).is_valid(),
-            "{:?}",
-            validate(source).diagnostics()
-        );
-    }
-
-    #[test]
-    fn frontmatter_codes() {
-        let report = validate("text");
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "FRONTMATTER001")
-        );
-        let report = validate(&source("schema: ttyinv/v1\ninvoice: [", valid_body()));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "YAML001")
-        );
-        assert_eq!(
-            report
-                .diagnostics()
-                .iter()
-                .find(|item| item.code == "YAML001")
-                .map(|item| item.message.as_str()),
-            Some("malformed YAML")
-        );
-        let report = validate(&source(
-            "schema: ttyinv/v2\ninvoice:\n  number: x\n  issued: 2026-01-01\n  currency: EUR\nfrom:\n  name: x\nto:\n  name: y",
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA002")
-        );
-        let report = validate(&source(
-            "schema: ttyinv/v1\ninvoice:\n  number: x\n  issued: 2026-01-01\n  currency: EUR\n  nope: x\nfrom:\n  name: x\nto:\n  name: y",
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA001")
-        );
-        assert_eq!(
-            report
-                .diagnostics()
-                .iter()
-                .find(|item| item.code == "SCHEMA001")
-                .map(|item| item.message.as_str()),
-            Some("invalid frontmatter")
-        );
-        let report = validate(&source(
-            "schema: ttyinv/v1\ninvoice:\n  number: ' '\n  issued: 2026-01-01\n  currency: EUR\nfrom:\n  name: x\nto:\n  name: y",
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA003")
-        );
-    }
-
-    #[test]
-    fn currency_and_date_codes() {
-        let report = validate(&source(
-            "schema: ttyinv/v1\ninvoice:\n  number: x\n  issued: 2026-01-01\n  due: 2025-12-31\n  currency: EU\nfrom:\n  name: x\nto:\n  name: y",
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "CURRENCY001")
-        );
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "DATE002")
-        );
-        let report = validate(&source(
-            "schema: ttyinv/v1\ninvoice:\n  number: x\n  issued: 2026-02-30\n  currency: EUR\nfrom:\n  name: x\nto:\n  name: y",
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "DATE001")
-        );
-    }
-
-    #[test]
-    fn markdown_codes() {
-        let frontmatter = valid_frontmatter();
-        for (body, code) in [
-            ("\nText\n", "MARKDOWN002"),
-            ("\n## Services\n\nText\n", "MARKDOWN002"),
-            ("\n## Services\n\n| One |\n| --- |\n| x |\n", "TABLE001"),
-            (
-                "\n## Services\n\n| One | Two |\n| --- | --- |\n",
-                "TABLE002",
-            ),
-            (
-                "\n## Services\n\n| One | Two |\n| --- | --- |\n| x | y | z |\n",
-                "TABLE003",
-            ),
-            (
-                "\n## Services\n\n| One | Amount |\n| --- | --- |\n| x | 1 |\n\n| Note | Value |\n| --- | --- |\n| x | y |\n",
-                "TABLE004",
-            ),
-            (
-                "\n## Services\n\n<div>x</div>\n\n| One | Amount |\n| --- | --- |\n| x | 1 |\n",
-                "HTML001",
-            ),
-        ] {
-            let report = validate(&source(frontmatter, body));
-            let item = report
-                .diagnostics()
-                .iter()
-                .find(|item| item.code == code)
-                .unwrap_or_else(|| panic!("missing {code}: {:?}", report.diagnostics()));
-            assert_eq!(
-                item.severity,
-                if code == "MARKDOWN002" {
-                    Severity::Warning
-                } else {
-                    Severity::Error
+            let block = rs[n];
+            let a = block.start;
+            let b = block.end;
+            if tail == ".title" {
+                l[a] = format!("## {}", escape_line(v));
+                return Ok(finish(s, l));
+            }
+            if tail == ".prose" {
+                let blocks = scan_blocks(&l);
+                return replace_prose_scalar(s, &l, block, &blocks, v);
+            }
+            if let Some(x) = tail.strip_prefix(".table.headings[") {
+                if let Some(j) = x.strip_suffix(']') {
+                    let j: usize = j
+                        .parse()
+                        .map_err(|_| Diagnostic::error("EDIT003", "invalid table path"))?;
+                    return replace_table_cell(&mut l, a, b, 0, j, v).map(|_| finish(s, l));
                 }
-            );
-            assert!(item.line.is_some());
-            assert!(item.column.is_some_and(|column| column > 0));
-            if code.starts_with("TABLE") {
-                assert!(item.section.is_some());
             }
-            if code == "TABLE003" {
-                assert!(item.row.is_some());
-                assert!(item.column_name.is_none());
+            if let Some(x) = tail.strip_prefix(".table.rows[") {
+                if let Some((r, c)) = x.split_once("].cells[") {
+                    let r: usize = r
+                        .parse()
+                        .map_err(|_| Diagnostic::error("EDIT003", "invalid table path"))?;
+                    let c: usize = c
+                        .strip_suffix(']')
+                        .ok_or_else(|| Diagnostic::error("EDIT003", "invalid table path"))?
+                        .parse()
+                        .map_err(|_| Diagnostic::error("EDIT003", "invalid table path"))?;
+                    return replace_table_cell(&mut l, a, b, r + 2, c, v).map(|_| finish(s, l));
+                }
             }
         }
     }
-
-    #[test]
-    fn schema_and_markdown_edge_cases() {
-        let null = source(
-            &valid_frontmatter().replace("due: 2026-01-02", "due: null"),
-            valid_body(),
-        );
-        assert!(
-            validate(&null)
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA001")
-        );
-        let payment_null = source(
-            &format!("{}\npayment: null", valid_frontmatter()),
-            valid_body(),
-        );
-        assert!(
-            validate(&payment_null)
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA001")
-        );
-
-        let missing = source(
-            &valid_frontmatter().replace("  currency: EUR\n", ""),
-            valid_body(),
-        );
-        let missing_report = validate(&missing);
-        assert!(
-            missing_report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "SCHEMA003")
-        );
-        assert!(
-            missing_report
-                .diagnostics()
-                .iter()
-                .all(|item| item.code != "SCHEMA001")
-        );
-
-        let misplaced = source(
-            valid_frontmatter(),
-            "\n<!-- ttyinv:summary-only -->\nText\n\n## Services\n\n| One | Two |\n| --- | --- |\n| x | y |\n",
-        );
-        assert!(
-            validate(&misplaced)
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "HTML001")
-        );
-
-        let fenced = source(
-            valid_frontmatter(),
-            "\n## Services\n\n| One | Two |\n| --- | --- |\n| x | y |\n\n```markdown\n| One | Two |\n| --- | --- |\n| x | y | z |\n```\n",
-        );
-        assert!(
-            validate(&fenced).is_valid(),
-            "{:?}",
-            validate(&fenced).diagnostics()
-        );
-        let indented = source(
-            valid_frontmatter(),
-            "\n## Services\n\n| One | Amount |\n| --- | --- |\n| x | 1 |\n\n    | One | Amount |\n    | --- | --- |\n    | x | 1 | extra |\n",
-        );
-        let indented_report = validate(&indented);
-        assert!(
-            indented_report.is_valid(),
-            "{:?}",
-            indented_report.diagnostics()
-        );
-        assert!(
-            indented_report
-                .diagnostics()
-                .iter()
-                .all(|item| item.code != codes::TABLE003)
-        );
-
-        let h1 = source(
-            valid_frontmatter(),
-            "\n# Invoice\n\n## Services\n\n| One | Two |\n| --- | --- |\n| x | y |\n",
-        );
-        assert!(
-            validate(&h1)
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "MARKDOWN001")
-        );
-
-        let empty_h2 = source(
-            valid_frontmatter(),
-            "\n##\n\n| One | Two |\n| --- | --- |\n| x | y |\n",
-        );
-        assert!(
-            validate(&empty_h2)
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "MARKDOWN001")
-        );
-        let warning_report = validate(&source(
-            valid_frontmatter(),
-            "\n## Notes\n\nNarrative only.\n",
-        ));
-        assert!(warning_report.is_valid());
-        assert!(
-            warning_report
-                .diagnostics()
-                .iter()
-                .any(|item| { item.code == "MARKDOWN002" && item.severity == Severity::Warning })
-        );
-        let sectionless = validate(&source(valid_frontmatter(), "\nNarrative only.\n"));
-        assert!(sectionless.is_valid());
-        assert!(
-            sectionless
-                .diagnostics()
-                .iter()
-                .any(|item| { item.code == "MARKDOWN003" && item.severity == Severity::Warning })
-        );
-    }
-
-    #[test]
-    fn diagnostics_have_typed_severity_and_locations() {
-        let frontmatter = "schema: ttyinv/v2\ninvoice:\n  number: x\n  issued: 2026-01-01\n  due: 2025-12-31\n  currency: EU\nfrom:\n  name: x\nto:\n  name: y";
-        let report = validate(&source(frontmatter, valid_body()));
-        for code in ["SCHEMA002", "CURRENCY001", "DATE002"] {
-            let item = report
-                .diagnostics()
-                .iter()
-                .find(|item| item.code == code)
-                .unwrap_or_else(|| panic!("missing {code}"));
-            assert_eq!(item.severity, Severity::Error);
-            assert!(
-                item.field_path
-                    .as_deref()
-                    .is_some_and(|path| !path.is_empty())
-            );
-            assert!(item.line.is_some());
-            assert!(item.column.is_some_and(|column| column > 0));
-        }
-        let invalid_date = validate(&source(
-            &frontmatter.replace("2026-01-01", "2026-02-30"),
-            valid_body(),
-        ));
-        let item = invalid_date
-            .diagnostics()
-            .iter()
-            .find(|item| item.code == "DATE001")
-            .expect("missing DATE001");
-        assert_eq!(item.severity, Severity::Error);
-        assert_eq!(item.field_path.as_deref(), Some("invoice.issued"));
-        assert!(item.line.is_some());
-        assert!(item.column.is_some_and(|column| column > 0));
-
-        let table = validate(&source(
-            valid_frontmatter(),
-            "\n## Services\n\n| Description | Amount (EUR) |\n| --- | --- |\n| Work | 10 | extra |\n",
-        ));
-        let item = table
-            .diagnostics()
-            .iter()
-            .find(|item| item.code == "TABLE003")
-            .expect("missing TABLE003");
-        assert_eq!(item.severity, Severity::Error);
-        assert_eq!(item.section_index, Some(1));
-        assert_eq!(item.row, Some(1));
-        assert!(item.column_name.is_none());
-        assert!(item.line.is_some());
-        assert_eq!(item.column, Some(1));
-
-        let warnings = validate(&source(valid_frontmatter(), "\nNarrative only.\n"));
-        assert!(warnings.is_valid());
-        for code in ["MARKDOWN002", "MARKDOWN003"] {
-            let item = warnings
-                .diagnostics()
-                .iter()
-                .find(|item| item.code == code)
-                .unwrap_or_else(|| panic!("missing {code}"));
-            assert_eq!(item.severity, Severity::Warning);
-            assert!(item.line.is_some());
-            assert!(item.column.is_some_and(|column| column > 0));
+    if let Some(rest) = p.strip_prefix("settlements.rows[") {
+        if let Some((r, c)) = rest.split_once("].cells[") {
+            let r: usize = r
+                .parse()
+                .map_err(|_| Diagnostic::error("EDIT003", "invalid settlement path"))?;
+            let c: usize = c
+                .strip_suffix(']')
+                .ok_or_else(|| Diagnostic::error("EDIT003", "invalid settlement path"))?
+                .parse()
+                .map_err(|_| Diagnostic::error("EDIT003", "invalid settlement path"))?;
+            let rs = fixed_range(&l, "Settlements")
+                .ok_or_else(|| Diagnostic::error("EDIT004", "settlements block is absent"))?;
+            return replace_table_cell(&mut l, rs.0, rs.1, r + 2, c, v).map(|_| finish(s, l));
         }
     }
-
-    #[test]
-    fn diagnostic_limit_is_bounded() {
-        let mut body = String::from("\n## Services\n\n| One | Two |\n| --- | --- |\n");
-        for _ in 0..205 {
-            body.push_str("| x | y | z |\n");
+    if let Some((root, tail)) = p.split_once('.') {
+        if root == "from" || root == "bill_to" || root == "signature" {
+            let block_name = match root {
+                "from" => "From",
+                "bill_to" => "Bill to",
+                _ => "Signature",
+            };
+            let rs = fixed_range(&l, block_name)
+                .ok_or_else(|| Diagnostic::error("EDIT004", "block is absent"))?;
+            if tail == "name" || tail == "email" || tail == "website" || tail == "label" {
+                let label = match tail {
+                    "name" => "Name",
+                    "email" => "Email",
+                    "website" => "Website",
+                    _ => "Label",
+                };
+                return replace_label(&mut l, rs.0 + 1, rs.1, label, None, v).map(|_| finish(s, l));
+            }
+            if let Some(x) = tail.strip_prefix("address[") {
+                let n: usize = x
+                    .strip_suffix(']')
+                    .ok_or_else(|| Diagnostic::error("EDIT003", "invalid address path"))?
+                    .parse()
+                    .map_err(|_| Diagnostic::error("EDIT003", "invalid address path"))?;
+                return replace_label(&mut l, rs.0 + 1, rs.1, "Address", Some(n), v)
+                    .map(|_| finish(s, l));
+            }
+            if let Some(k) = tail.strip_prefix("identifiers.") {
+                return replace_label(&mut l, rs.0 + 1, rs.1, &format!("ID.{k}"), None, v)
+                    .map(|_| finish(s, l));
+            }
+            if tail == "logo.alt" || tail == "image.alt" {
+                for x in &mut l[rs.0 + 1..rs.1] {
+                    if let Some((_, z)) = parse_image(x) {
+                        *x = format!("![{}]({})", escape_line(v), escape_line(&z));
+                        return Ok(finish(s, l));
+                    }
+                }
+            }
         }
-        let report = validate(&source(valid_frontmatter(), &body));
-        assert_eq!(report.diagnostics().len(), 200);
-        assert_eq!(
-            report.diagnostics().last().map(|item| item.code.as_str()),
-            Some("LIMIT001")
-        );
     }
-
-    #[test]
-    fn allowed_break_html_is_valid() {
-        let report = validate(&source(
-            valid_frontmatter(),
-            "\n<!-- ttyinv:summary-only -->\n## Services\n\n| One | Amount |\n| --- | --- |\n| a<br>b | 1 |\n",
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .all(|item| item.code != "HTML001"),
-            "{:?}",
-            report.diagnostics()
-        );
-    }
-    #[test]
-    fn required_values_use_schema003() {
-        for frontmatter in [
-            "invoice:\n  number: x\n  issued: 2026-01-01\n  currency: EUR\nfrom:\n  name: x\nto:\n  name: y",
-            "schema: ttyinv/v1\ninvoice:\n  number: x\n  issued: 2026-01-01\n  currency: EUR\nfrom:\n  name: x\nto: {}",
-        ] {
-            let report = validate(&source(frontmatter, valid_body()));
-            assert_eq!(report.diagnostics()[0].code, "SCHEMA003");
+    if let Some(rest) = p.strip_prefix("payment.methods[") {
+        if let Some((m, tail)) = rest.split_once("].") {
+            let m: usize = m
+                .parse()
+                .map_err(|_| Diagnostic::error("EDIT003", "invalid payment path"))?;
+            let rs = fixed_range(&l, "Payment")
+                .ok_or_else(|| Diagnostic::error("EDIT004", "payment block is absent"))?;
+            let hs = (rs.0 + 1..rs.1)
+                .filter(|i| l[*i].starts_with("### "))
+                .collect::<Vec<_>>();
+            if m >= hs.len() {
+                return Err(Diagnostic::error(
+                    "EDIT002",
+                    "payment method index is out of bounds",
+                ));
+            }
+            let a = hs[m];
+            let b = *hs.get(m + 1).unwrap_or(&rs.1);
+            if tail == "title" {
+                l[a] = format!("### {}", escape_line(v));
+                return Ok(finish(s, l));
+            }
+            if let Some(k) = tail.strip_prefix("fields.") {
+                return replace_label(&mut l, a + 1, b, k, None, v).map(|_| finish(s, l));
+            }
         }
     }
-
-    #[test]
-    fn lowercase_currency_is_rejected() {
-        let report = validate(&source(
-            &valid_frontmatter().replace("currency: EUR", "currency: eur"),
-            valid_body(),
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "CURRENCY001")
-        );
+    Err(Diagnostic::error("EDIT003", "scalar path is not editable"))
+}
+#[allow(clippy::result_large_err)]
+fn replace_label(
+    l: &mut [String],
+    a: usize,
+    b: usize,
+    label: &str,
+    index: Option<usize>,
+    v: &str,
+) -> Result<(), Diagnostic> {
+    let mut found = 0;
+    for x in &mut l[a..b] {
+        if x.starts_with(&format!("- {label}:")) {
+            if index.is_none() || index == Some(found) {
+                let pre = x
+                    .split_once(':')
+                    .map_or(format!("- {label}"), |(p, _)| p.to_owned());
+                *x = format!("{pre}: {}", escape_line(v));
+                return Ok(());
+            }
+            found += 1
+        }
     }
-
-    #[test]
-    fn adjacent_directives_are_allowed() {
-        let report = validate(&source(
-            valid_frontmatter(),
-            "\n<!-- ttyinv:page-break-before -->\n<!-- ttyinv:summary-only -->\n## Services\n\n| One | Amount |\n| --- | --- |\n| x | 1 |\n",
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .all(|item| item.code != "HTML001")
-        );
+    Err(Diagnostic::error("EDIT004", "scalar field is absent"))
+}
+#[allow(clippy::result_large_err)]
+fn replace_table_cell(
+    l: &mut [String],
+    a: usize,
+    b: usize,
+    row: usize,
+    col: usize,
+    v: &str,
+) -> Result<(), Diagnostic> {
+    let mut n = 0;
+    for x in &mut l[a..b] {
+        if x.starts_with('|') {
+            if n == row {
+                let mut cells = split_pipe(x);
+                if col >= cells.len() {
+                    return Err(Diagnostic::error("EDIT004", "table cell is absent"));
+                }
+                cells[col] = v.into();
+                *x = format!(
+                    "| {} |",
+                    cells
+                        .iter()
+                        .map(|c| escape_table_cell(c))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
+                return Ok(());
+            }
+            n += 1
+        }
     }
-
-    #[test]
-    fn inline_heading_table_width_is_checked() {
-        let report = validate(&source(
-            valid_frontmatter(),
-            "\n## **Services**\n\n| One | Amount |\n| --- | --- |\n| x | 1 | extra |\n",
-        ));
-        assert!(
-            report
-                .diagnostics()
-                .iter()
-                .any(|item| item.code == "TABLE003")
-        );
+    Err(Diagnostic::error("EDIT004", "table cell is absent"))
+}
+pub fn atomic_write(path: &Path, source: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|x| x.to_str())
+        .unwrap_or("invoice");
+    for _ in 0..100 {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let tmp = parent.join(format!(".{name}.ttyinv.{}.{}", std::process::id(), id));
+        let Ok(mut f) = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        else {
+            continue;
+        };
+        if f.write_all(source.as_bytes())
+            .and_then(|_| f.sync_all())
+            .is_err()
+        {
+            let _ = fs::remove_file(&tmp);
+            return Err(std::io::Error::other("temporary write failed"));
+        }
+        match fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                let _ = fs::remove_file(&tmp);
+                return Err(err);
+            }
+        }
     }
-
-    #[test]
-    fn indexed_paths_and_decimal_document_are_preserved() {
-        let input = source(
-            &format!(
-                "{}\nsettlements:\n  - date: 2026-01-18\n    paid:\n      amount: 10.005\n      currency: EUR\n  - date: 2026-01-19\n    paid:\n      amount: 20.00\n      currency: EUR\n  - date: 2026-02-30\n    paid:\n      amount: 30.00\n      currency: EUR",
-                valid_frontmatter()
-            ),
-            valid_body(),
-        );
-        let report = validate(&input);
-        let date = report
-            .diagnostics()
-            .iter()
-            .find(|item| item.code == "DATE001")
-            .expect("third settlement date");
-        assert_eq!(date.field_path.as_deref(), Some("settlements[2].date"));
-        let valid = source(
-            &format!(
-                "{}\nsettlements:\n  - date: 2026-01-18\n    paid:\n      amount: 10.005\n      currency: EUR",
-                valid_frontmatter()
-            ),
-            valid_body(),
-        );
-        let model = document(&valid).expect("document");
-        assert_eq!(model.field_order[0], "schema");
-        assert!(model.spans.contains_key("settlements[0].paid.amount"));
-        assert_eq!(
-            model.frontmatter.settlements.as_ref().unwrap()[0]
-                .paid
-                .amount
-                .to_string(),
-            "10.005"
-        );
-    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "unable to create exclusive temporary file",
+    ))
 }

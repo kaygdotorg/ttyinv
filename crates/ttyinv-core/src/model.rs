@@ -1,185 +1,248 @@
 use rust_decimal::Decimal;
-use serde::{Deserialize, Deserializer};
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 
-/// A source position in the invoice input.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct SourcePosition {
     pub line: usize,
     pub column: usize,
 }
-
-/// The inclusive source range occupied by a parsed node.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct SourceSpan {
     pub start: SourcePosition,
     pub end: SourcePosition,
 }
 
-fn deserialize_decimal<'de, D>(deserializer: D) -> Result<Decimal, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_yaml::Value::deserialize(deserializer)?;
-    let source = match value {
-        serde_yaml::Value::String(value) => value,
-        serde_yaml::Value::Number(value) => value.to_string(),
-        _ => return Err(serde::de::Error::custom("money amount must be a decimal")),
-    };
-    if !is_decimal_syntax(&source) {
-        return Err(serde::de::Error::custom("money amount must be a decimal"));
-    }
-    Decimal::from_str_exact(&source)
-        .map_err(|_| serde::de::Error::custom("money amount must be a decimal"))
-}
-
-fn is_decimal_syntax(value: &str) -> bool {
-    let value = value.strip_prefix('-').unwrap_or(value);
-    let (whole, fraction) = value
-        .split_once('.')
-        .map_or((value, None), |(a, b)| (a, Some(b)));
-    !whole.is_empty()
-        && whole.bytes().all(|byte| byte.is_ascii_digit())
-        && fraction
-            .is_none_or(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Frontmatter {
+pub struct Config {
     pub schema: String,
-    pub invoice: Invoice,
-    pub from: Party,
-    pub to: Party,
-    pub payment: Option<Payment>,
-    pub settlements: Option<Vec<Settlement>>,
-    pub signature: Option<Signature>,
-    pub appearance: Option<Appearance>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+    #[serde(default = "default_format")]
+    pub format: String,
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    #[serde(default = "default_font")]
+    pub font: String,
+    #[serde(default = "default_density")]
+    pub density: String,
+}
+fn default_format() -> String {
+    "code-comma-dot".into()
+}
+fn default_theme() -> String {
+    "printable".into()
+}
+fn default_font() -> String {
+    "geist-mono".into()
+}
+fn default_density() -> String {
+    "comfortable".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Invoice {
+pub struct Metadata {
     pub number: String,
-    pub title: Option<String>,
-    pub issued: String,
-    pub due: Option<String>,
-    pub currency: String,
-    pub locale: Option<String>,
+    #[serde(default = "default_kind")]
+    pub kind: String,
+    pub issued: Date,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<Date>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terms: Option<String>,
-    pub kind: Option<InvoiceKind>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+    pub currency: String,
+}
+fn default_kind() -> String {
+    "standard".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Date(pub String);
+impl Date {
+    pub fn parse(s: &str) -> Option<Self> {
+        let b = s.as_bytes();
+        if b.len() != 10
+            || b[4] != b'-'
+            || b[7] != b'-'
+            || !b
+                .iter()
+                .enumerate()
+                .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+        {
+            return None;
+        }
+        let y = s[0..4].parse::<i32>().ok()?;
+        let m = s[5..7].parse::<u32>().ok()?;
+        let d = s[8..10].parse::<u32>().ok()?;
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let md = match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 => {
+                if leap {
+                    29
+                } else {
+                    28
+                }
+            }
+            _ => 0,
+        };
+        (y > 0 && d > 0 && d <= md).then(|| Self(s.into()))
+    }
+}
+impl fmt::Display for Date {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Image {
+    pub alt: String,
+    pub src: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Identifier {
+    pub key: String,
+    pub value: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Party {
     pub name: String,
-    pub address: Option<Vec<Scalar>>,
-    pub identifiers: Option<HashMap<String, Scalar>>,
+    #[serde(default)]
+    pub address: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
-    pub logo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub website: Option<String>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+    #[serde(default)]
+    pub identifiers: Vec<Identifier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<Image>,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Scalar {
-    String(String),
-    Number(serde_yaml::Number),
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Payment {
-    pub title: Option<String>,
-    pub methods: Option<Vec<PaymentMethod>>,
-    #[serde(rename = "pageBreakBefore")]
-    pub page_break_before: Option<bool>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+pub struct Money {
+    pub amount: Decimal,
+    pub currency: String,
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settlement {
+    pub date: Date,
+    pub paid: Money,
+    pub received: Money,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaymentMethod {
     pub title: String,
-    pub fields: HashMap<String, Scalar>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+    pub fields: Vec<LabelValue>,
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Settlement {
-    pub date: String,
-    pub paid: Money,
-    pub received: Option<Money>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+pub struct Payment {
+    pub methods: Vec<PaymentMethod>,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Money {
-    #[serde(deserialize_with = "deserialize_decimal")]
-    pub amount: Decimal,
-    pub currency: String,
-    #[serde(skip)]
-    pub span: SourceSpan,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Signature {
-    pub image: Option<String>,
-    pub label: Option<String>,
-    pub name: Option<String>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<Image>,
+    pub name: String,
+    pub label: String,
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Appearance {
-    pub accent: Option<String>,
-    pub density: Option<Density>,
-    pub font: Option<Font>,
-    pub ink: Option<String>,
-    pub muted: Option<String>,
-    pub paper: Option<String>,
-    pub rule: Option<String>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+pub struct LabelValue {
+    pub label: String,
+    pub value: String,
 }
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TableAlignment {
+    #[default]
+    None,
+    Left,
+    Center,
+    Right,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Font {
-    pub bold: Option<String>,
-    pub family: Option<String>,
-    pub regular: Option<String>,
-    #[serde(skip)]
-    pub span: SourceSpan,
+pub struct Table {
+    pub headings: Vec<String>,
+    #[serde(default)]
+    pub alignments: Vec<TableAlignment>,
+    pub rows: Vec<Vec<String>>,
 }
-
-#[derive(Debug, Deserialize)]
-pub enum Density {
-    #[serde(rename = "comfortable")]
-    Comfortable,
-    #[serde(rename = "compact")]
-    Compact,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "lowercase")]
+pub enum SectionBody {
+    Table(Table),
+    Prose(String),
 }
-
-#[derive(Debug, Deserialize)]
-pub enum InvoiceKind {
-    #[serde(rename = "standard")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Gap {
+    None,
+    Tight,
+    #[default]
     Standard,
-    #[serde(rename = "gst")]
-    Gst,
+    Roomy,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionDirectives {
+    pub gap: Gap,
+    pub page_break_before: bool,
+    pub summary_only: bool,
+}
+impl Default for SectionDirectives {
+    fn default() -> Self {
+        Self {
+            gap: Gap::Standard,
+            page_break_before: false,
+            summary_only: false,
+        }
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Section {
+    pub title: String,
+    pub body: SectionBody,
+    pub directives: SectionDirectives,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<Decimal>,
+    #[serde(skip)]
+    pub span: SourceSpan,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Document {
+    pub config: Config,
+    pub title: String,
+    pub metadata: Metadata,
+    pub from: Party,
+    pub bill_to: Party,
+    pub ordinary_sections: Vec<Section>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlements: Option<Table>,
+    #[serde(default)]
+    pub settlements_page_break_before: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment: Option<Payment>,
+    #[serde(default)]
+    pub payment_page_break_before: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Signature>,
+    #[serde(default)]
+    pub signature_page_break_before: bool,
+    #[serde(default)]
+    pub grand_total: Decimal,
+    #[serde(skip)]
+    pub source: String,
 }

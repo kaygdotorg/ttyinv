@@ -1,22 +1,29 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: CONF-MONEY
-  issued: 2026-01-15
-  currency: EUR
-from:
-  name: Example Sender
-to:
-  name: Example Recipient
-settlements:
-  - date: 2026-01-20
-    paid:
-      amount: nope
-      currency: EUR
+schema: ttyinv/v2
 ---
+
+# Example invoice
+
+- Number: INV-001
+- Issued: 2026-01-15
+- Currency: EUR
+
+## From
+
+- Name: Example Seller
+
+## Bill to
+
+- Name: Example Buyer
 
 ## Services
 
 | Description | Amount (EUR) |
-| --- | ---: |
-| Consulting | 100.00 |
+|---|---:|
+| Service | 10.00 |
+
+## Settlements
+
+| Date | Paid | Paid currency | Received | Received currency |
+|---|---:|---|---:|---|
+| 2026-02-01 | nope | EUR | 1.00 | EUR |

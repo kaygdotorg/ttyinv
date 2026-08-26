@@ -1,0 +1,114 @@
+{
+  "fixture": "03-multiple-financial-sections",
+  "source": "03-multiple-financial-sections.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable"
+  },
+  "currency": "EUR",
+  "currency_exponent": 2,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:Design services",
+    "section:Pass-through expenses",
+    "section:Credits"
+  ],
+  "sections": [
+    {
+      "title": "Design services",
+      "body": "table",
+      "row_amounts": [
+        "1200.00",
+        "160.00"
+      ],
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "total": "1360.00"
+    },
+    {
+      "title": "Pass-through expenses",
+      "body": "table",
+      "row_amounts": [
+        "45.00",
+        "25.50"
+      ],
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "total": "70.50"
+    },
+    {
+      "title": "Credits",
+      "body": "table",
+      "row_amounts": [
+        "-25.00"
+      ],
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "total": "-25.00"
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "payment",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "1405.50",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {},
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

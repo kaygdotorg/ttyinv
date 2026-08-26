@@ -1,0 +1,105 @@
+{
+  "fixture": "08-settlements-payment",
+  "source": "08-settlements-payment.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable"
+  },
+  "currency": "EUR",
+  "currency_exponent": 2,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:Services",
+    "settlements",
+    "payment"
+  ],
+  "sections": [
+    {
+      "title": "Services",
+      "body": "table",
+      "row_amounts": [
+        "2000.00"
+      ],
+      "currency_exponent": 2,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      },
+      "total": "2000.00"
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": true,
+      "movable": false,
+      "page_break_before": true
+    },
+    {
+      "name": "payment",
+      "present": true,
+      "movable": false,
+      "page_break_before": true
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "2000.00",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {
+    "fixed_page_breaks": {
+      "settlements": true,
+      "payment": true
+    },
+    "settlement_rows": [
+      {
+        "date": "2026-02-01",
+        "paid": "1000.00",
+        "paid_currency": "EUR",
+        "received": "1000.00",
+        "received_currency": "EUR"
+      },
+      {
+        "date": "2026-02-15",
+        "paid": "1000.00",
+        "paid_currency": "EUR",
+        "received": "1000.00",
+        "received_currency": "EUR"
+      }
+    ]
+  },
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

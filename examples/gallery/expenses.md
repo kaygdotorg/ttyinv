@@ -1,54 +1,41 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-2026-102
-  title: Design and reimbursable expenses
-  issued: 2026-02-18
-  due: 2026-03-04
-  currency: EUR
-  locale: en-GB
-from:
-  name: Meridian Works
-  address:
-    - 42 Fictional Avenue
-    - Lisbon
-    - Portugal
-  identifiers:
-    VAT: PT000000000
-  email: accounts@example.com
-to:
-  name: Example Robotics GmbH
-  address:
-    - 8 Prototype Platz
-    - Hamburg
-    - Germany
-  identifiers:
-    VAT: DE000000001
-payment:
-  title: Payment
-  methods:
-    - title: Transfer
-      fields:
-        Beneficiary: Meridian Works
-        Reference: INV-2026-102
-        Instructions: Request remittance details from accounts@example.com
+schema: ttyinv/v2
+format: code-comma-dot
+theme: printable
+font: geist-mono
+density: comfortable
 ---
 
-## Contract fees
+# Consulting services
 
-| Description | Hours | Rate | Amount (EUR) |
-| --- | ---: | ---: | ---: |
-| Product interface design | 36 | 145.00 | auto |
-| Design review | 4 | 145.00 | auto |
+- Number: INV-2026-001
+- Kind: standard
+- Issued: 2026-01-15
+- Due: 2026-01-29
+- Terms: Net 14
+- Currency: EUR
 
-## Operating expenses
+## From
 
-| Description | Amount (EUR) |
-| --- | ---: |
-| Prototype materials | 184.30 |
-| Rail travel | 96.40 |
-| Accessibility audit tool | 72.00 |
+- Name: Northstar Studio
+- Address: 10 Example Street
+- Address: Berlin
+- Email: billing@example.com
+- Website: https://northstar.example
+- ID.VAT: DE000000000
+
+## Bill to
+
+- Name: Acme Research Ltd
+- Address: 20 Sample Road
+- Address: Berlin
+
+## Expenses
+
+| Description | Days | Rate | Amount (EUR) |
+|---|---:|---:|---:|
+| Systems consulting | 8 | 650.00 | auto |
 
 ## Notes
 
-Receipts are retained by the issuer and can be supplied on request.
+Payment is due within fourteen days.

@@ -1,0 +1,85 @@
+{
+  "fixture": "12-kwd",
+  "source": "12-kwd.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable"
+  },
+  "currency": "KWD",
+  "currency_exponent": 3,
+  "content_order": [
+    "title",
+    "metadata",
+    "from",
+    "bill_to",
+    "section:Specialist work"
+  ],
+  "sections": [
+    {
+      "title": "Specialist work",
+      "body": "table",
+      "row_amounts": [
+        "24.690",
+        "0.001"
+      ],
+      "total": "24.691",
+      "currency_exponent": 3,
+      "directives": {
+        "gap": "standard",
+        "page_break_before": false,
+        "summary_only": false
+      }
+    }
+  ],
+  "fixed_blocks": [
+    {
+      "name": "from",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "bill_to",
+      "present": true,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "settlements",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "payment",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    },
+    {
+      "name": "signature",
+      "present": false,
+      "movable": false,
+      "page_break_before": false
+    }
+  ],
+  "grand_total": "24.691",
+  "links": [
+    "https://studio.example"
+  ],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validate/sections where available; source-derived parser invariants for rows, links, images, and fixed metadata; Decimal half-even arithmetic; no renderer rectangle assertions",
+  "notes": {
+    "currency_rounding": "three exponent; fils retained"
+  },
+  "fixed_block_order": [
+    "from",
+    "bill_to",
+    "settlements",
+    "payment",
+    "signature"
+  ]
+}

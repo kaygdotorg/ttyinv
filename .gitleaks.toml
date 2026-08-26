@@ -7,7 +7,7 @@ useDefault = true
 description = "Only known fabricated documentation values are allowed."
 paths = [
   '''^LICENSE$''',
-  '''(^|/)(?:\.venv|artifacts|dist|build)(/|$)''',
+  '''(^|/)(?:dist|build|target)(/|$)''',
 ]
 regexes = [
   '''FR0{11}''',

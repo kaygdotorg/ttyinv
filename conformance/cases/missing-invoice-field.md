@@ -1,16 +1,22 @@
 ---
-schema: ttyinv/v1
-invoice:
-  number: INV-MISSING
-  issued: 2026-01-01
-from:
-  name: Sender
-to:
-  name: Receiver
+schema: ttyinv/v2
 ---
+
+# Example invoice
+
+- Issued: 2026-01-15
+- Currency: EUR
+
+## From
+
+- Name: Example Seller
+
+## Bill to
+
+- Name: Example Buyer
 
 ## Services
 
 | Description | Amount (EUR) |
-| --- | ---: |
-| Work | 10 |
+|---|---:|
+| Service | 10.00 |
