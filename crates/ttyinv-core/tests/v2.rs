@@ -1,6 +1,6 @@
 use ttyinv_core::{
-    EditOperation, EditRequest, Gap, SectionBody, TableAlignment, apply_edit, document, parse_json,
-    parse_yaml, revision, serialize_markdown, to_json, to_yaml, validate,
+    apply_edit, document, parse_json, parse_yaml, revision, serialize_markdown, to_json, to_yaml,
+    validate, EditOperation, EditRequest, FontScale, FrameInset, Gap, SectionBody, TableAlignment,
 };
 
 const SOURCE: &str = include_str!("../../../examples/simple.md");
@@ -161,18 +161,16 @@ fn scalar_paths_and_source_edits() {
         source = response.source;
     }
     assert!(source.contains("Design"));
-    assert!(
-        apply_edit(request(
-            &source,
-            EditOperation::SetScalar {
-                path: "hostile.path".into(),
-                value: "x".into()
-            }
-        ))
-        .diagnostics
-        .iter()
-        .any(|d| d.code == "EDIT003")
-    );
+    assert!(apply_edit(request(
+        &source,
+        EditOperation::SetScalar {
+            path: "hostile.path".into(),
+            value: "x".into()
+        }
+    ))
+    .diagnostics
+    .iter()
+    .any(|d| d.code == "EDIT003"));
 }
 
 #[test]
@@ -394,12 +392,10 @@ fn money_columns_validate_and_expose_totals() {
     let rounded = SOURCE.replace("8 | 650.00 | auto", "2.5 | 6.67 | 16.66");
     assert!(document(&rounded).is_ok());
     let outside = rounded.replace("16.66", "16.65");
-    assert!(
-        validate(&outside)
-            .diagnostics()
-            .iter()
-            .any(|d| d.code == "MONEY004")
-    );
+    assert!(validate(&outside)
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "MONEY004"));
 
     let missing = SOURCE
         .replace(
@@ -469,11 +465,9 @@ fn prose_scalar_edits_are_single_line_and_stop_before_directives() {
     ));
     assert!(edited.diagnostics.is_empty(), "{:?}", edited.diagnostics);
     assert!(edited.source.starts_with('\u{feff}'));
-    assert!(
-        edited
-            .source
-            .contains("\r\n<!-- ttyinv:page-break-before -->\r\n")
-    );
+    assert!(edited
+        .source
+        .contains("\r\n<!-- ttyinv:page-break-before -->\r\n"));
     assert!(!edited.source.replace("\r\n", "").contains('\n'));
 }
 
@@ -555,12 +549,10 @@ fn summary_detection_uses_description_alias_column() {
 #[test]
 fn rate_scale_and_minor_unit_rounding_define_money_tolerance() {
     let strict = SOURCE.replace("8 | 650.00 | auto", "1000 | 1.0000 | 995");
-    assert!(
-        validate(&strict)
-            .diagnostics()
-            .iter()
-            .any(|d| d.code == "MONEY004")
-    );
+    assert!(validate(&strict)
+        .diagnostics()
+        .iter()
+        .any(|d| d.code == "MONEY004"));
 
     let boundary = SOURCE.replace("8 | 650.00 | auto", "1000 | 1.0000 | 999.945");
     assert!(document(&boundary).is_ok());
@@ -568,4 +560,80 @@ fn rate_scale_and_minor_unit_rounding_define_money_tolerance() {
     let half_even = SOURCE.replace("8 | 650.00 | auto", "1 | 1.005 | 1.005");
     let doc = document(&half_even).expect("half-even amount rounding");
     assert_eq!(doc.grand_total, rust_decimal::Decimal::new(100, 2));
+}
+
+#[test]
+fn appearance_defaults_boundaries_and_strict_values() {
+    let without_appearance = SOURCE
+        .lines()
+        .filter(|line| {
+            !line.starts_with("accent:")
+                && !line.starts_with("font-scale:")
+                && !line.starts_with("frame-inset:")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let defaults = document(&without_appearance).expect("appearance defaults");
+    assert!(defaults.config.accent.is_none());
+    assert_eq!(defaults.config.font_scale, FontScale::default());
+    assert_eq!(defaults.config.frame_inset, FrameInset::default());
+
+    for (field, low, high) in [("font-scale", "100", "140"), ("frame-inset", "30", "60")] {
+        for value in [low, high] {
+            let source = SOURCE.replace(
+                &format!(
+                    "{field}: {}",
+                    if field == "font-scale" { "100" } else { "54" }
+                ),
+                &format!("{field}: {value}"),
+            );
+            assert!(document(&source).is_ok(), "{field}={value}");
+        }
+    }
+    for replacement in [
+        ("accent: \"#2f6fed\"", "accent: \"#2F6FED\""),
+        ("accent: \"#2f6fed\"", "accent: \"#fff\""),
+        ("font-scale: 100", "font-scale: 99"),
+        ("font-scale: 100", "font-scale: 141"),
+        ("frame-inset: 54", "frame-inset: 29"),
+        ("frame-inset: 54", "frame-inset: 61"),
+        ("font-scale: 100", "font-scale: nope"),
+    ] {
+        assert!(document(&SOURCE.replace(replacement.0, replacement.1)).is_err());
+    }
+}
+
+#[test]
+fn appearance_canonical_order_adapters_and_edits() {
+    let doc = document(SOURCE).expect("appearance source");
+    let markdown = serialize_markdown(&doc);
+    let density = markdown.find("density:").expect("density");
+    let accent = markdown.find("accent:").expect("accent");
+    let scale = markdown.find("font-scale:").expect("font scale");
+    let inset = markdown.find("frame-inset:").expect("frame inset");
+    assert!(density < accent && accent < scale && scale < inset);
+    assert!(markdown.contains("accent: \"#2f6fed\""));
+
+    let json = to_json(&doc).expect("JSON");
+    let yaml = to_yaml(&doc).expect("YAML");
+    assert!(json.contains("\"font_scale\": 100"));
+    assert!(json.contains("\"frame_inset\": 54"));
+    assert!(yaml.contains("font_scale: 100"));
+    assert!(yaml.contains("frame_inset: 54"));
+    assert_eq!(
+        parse_json(&json).expect("JSON parse").config,
+        parse_yaml(&yaml).expect("YAML parse").config
+    );
+
+    let edited = apply_edit(request(
+        SOURCE,
+        EditOperation::SetScalar {
+            path: "config.font_scale".into(),
+            value: "125".into(),
+        },
+    ));
+    assert!(edited.diagnostics.is_empty(), "{:?}", edited.diagnostics);
+    assert!(edited.source.contains("font-scale: 125"));
+    assert!(edited.source.contains("accent: \"#2f6fed\""));
+    assert!(edited.source.contains("## Contract fees"));
 }

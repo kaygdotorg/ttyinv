@@ -412,6 +412,56 @@ fn fixed_range(l: &[String], name: &str) -> Option<(usize, usize)> {
         .find(|b| b.fixed == Some(name))
         .map(|b| (b.start, b.end))
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrontmatterConfig {
+    schema: String,
+    #[serde(default = "model::default_format")]
+    format: String,
+    #[serde(default = "model::default_theme")]
+    theme: String,
+    #[serde(default = "model::default_font")]
+    font: String,
+    #[serde(default = "model::default_density")]
+    density: String,
+    #[serde(default)]
+    accent: Option<Accent>,
+    #[serde(rename = "font-scale", default)]
+    font_scale: FontScale,
+    #[serde(rename = "frame-inset", default)]
+    frame_inset: FrameInset,
+}
+
+impl From<FrontmatterConfig> for Config {
+    fn from(value: FrontmatterConfig) -> Self {
+        Self {
+            schema: value.schema,
+            format: value.format,
+            theme: value.theme,
+            font: value.font,
+            density: value.density,
+            accent: value.accent,
+            font_scale: value.font_scale,
+            frame_inset: value.frame_inset,
+        }
+    }
+}
+fn invalid_appearance_config(raw: &serde_yaml::Value) -> bool {
+    let Some(mapping) = raw.as_mapping() else {
+        return false;
+    };
+    let string_key = |key: &str| serde_yaml::Value::String(key.into());
+    mapping
+        .get(string_key("accent"))
+        .is_some_and(|value| serde_yaml::from_value::<Accent>(value.clone()).is_err())
+        || mapping
+            .get(string_key("font-scale"))
+            .is_some_and(|value| serde_yaml::from_value::<FontScale>(value.clone()).is_err())
+        || mapping
+            .get(string_key("frame-inset"))
+            .is_some_and(|value| serde_yaml::from_value::<FrameInset>(value.clone()).is_err())
+}
 pub fn document(source: &str) -> Result<Document, ValidationReport> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ValidationReport {
@@ -427,12 +477,28 @@ pub fn document(source: &str) -> Result<Document, ValidationReport> {
     if !e.is_empty() {
         return Err(ValidationReport { diagnostics: e });
     }
-    let c: Config = match serde_yaml::from_str(yaml) {
-        Ok(v) => v,
-        Err(_) => {
+    let raw: serde_yaml::Value = match serde_yaml::from_str(yaml) {
+        Ok(v) if !yaml_contains_null(&v) => v,
+        _ => {
             return Err(ValidationReport {
                 diagnostics: vec![Diagnostic::error(
                     "SCHEMA001",
+                    "frontmatter must be a valid ttyinv/v2 configuration",
+                )],
+            });
+        }
+    };
+    let appearance_invalid = invalid_appearance_config(&raw);
+    let c: Config = match serde_yaml::from_value::<FrontmatterConfig>(raw) {
+        Ok(v) => v.into(),
+        Err(_) => {
+            return Err(ValidationReport {
+                diagnostics: vec![Diagnostic::error(
+                    if appearance_invalid {
+                        "SCHEMA007"
+                    } else {
+                        "SCHEMA001"
+                    },
                     "frontmatter must be a valid ttyinv/v2 configuration",
                 )],
             });
@@ -1481,13 +1547,21 @@ fn escape_table_cell(value: &str) -> String {
         .replace('\n', "<br>")
 }
 pub fn serialize_markdown(d: &Document) -> String {
+    let accent = d
+        .config
+        .accent
+        .as_ref()
+        .map_or_else(String::new, |value| format!("accent: \"{value}\"\n"));
     let mut s = format!(
-        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\ndensity: {}\n---\n\n# {}\n\n",
+        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\ndensity: {}\n{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
         escape_line(&d.config.schema),
         escape_line(&d.config.format),
         escape_line(&d.config.theme),
         escape_line(&d.config.font),
         escape_line(&d.config.density),
+        accent,
+        d.config.font_scale,
+        d.config.frame_inset,
         escape_line(&d.title)
     );
     for (k, v) in [
@@ -1990,8 +2064,48 @@ fn set_gap(s: &str, n: usize, g: Gap) -> Result<String, Diagnostic> {
     Ok(finish(s, l))
 }
 #[allow(clippy::result_large_err)]
+fn replace_config_scalar(l: &mut Vec<String>, key: &str, value: &str) -> Result<(), Diagnostic> {
+    let Some(end) = l
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, line)| (line == "---").then_some(index))
+    else {
+        return Err(Diagnostic::error(
+            "EDIT004",
+            "frontmatter configuration is absent",
+        ));
+    };
+    let prefix = format!("{key}:");
+    let rendered = if key == "accent" {
+        format!("\"{}\"", escape_line(value))
+    } else {
+        escape_line(value)
+    };
+    for line in &mut l[1..end] {
+        if line.starts_with(&prefix) {
+            let label = line.split_once(':').map_or(key, |(label, _)| label);
+            *line = format!("{label}: {rendered}");
+            return Ok(());
+        }
+    }
+    l.insert(end, format!("{key}: {rendered}"));
+    Ok(())
+}
+#[allow(clippy::result_large_err)]
 fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
     let mut l = lines(s);
+    if let Some(field) = p.strip_prefix("config.") {
+        let key = match field {
+            "accent" => "accent",
+            "font_scale" => "font-scale",
+            "frame_inset" => "frame-inset",
+            _ => "",
+        };
+        if !key.is_empty() {
+            return replace_config_scalar(&mut l, key, v).map(|_| finish(s, l));
+        }
+    }
     if p == "title" {
         if let Some(x) = l.iter_mut().find(|x| x.starts_with("# ")) {
             *x = format!("# {}", escape_line(v));

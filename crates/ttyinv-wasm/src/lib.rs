@@ -1,10 +1,10 @@
 use serde::Serialize;
 use ttyinv_core::{
-    Diagnostic, EditRequest, EditResponse, MAX_SOURCE_BYTES, Severity, StructureManifest,
-    apply_edit as apply_edit_engine, revision as revision_engine,
+    apply_edit as apply_edit_engine, revision as revision_engine, Diagnostic, EditRequest,
+    EditResponse, Severity, StructureManifest, MAX_SOURCE_BYTES,
 };
-use wasm_bindgen::JsValue;
 use wasm_bindgen::prelude::wasm_bindgen;
+use wasm_bindgen::JsValue;
 const MAX_DECODED_REQUEST_BYTES: usize = 256 * 1024;
 #[derive(Debug, Serialize)]
 struct ValidationResult<'a> {

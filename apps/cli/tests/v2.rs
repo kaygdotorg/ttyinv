@@ -66,11 +66,9 @@ fn edits_atomic_stdout_check_and_one_based() {
         "roomy",
     ]);
     assert!(atomic.status.success());
-    assert!(
-        fs::read_to_string(&path)
-            .unwrap()
-            .contains("gap-before roomy")
-    );
+    assert!(fs::read_to_string(&path)
+        .unwrap()
+        .contains("gap-before roomy"));
     let _ = fs::remove_file(path);
 }
 #[test]

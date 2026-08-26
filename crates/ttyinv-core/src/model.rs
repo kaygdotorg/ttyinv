@@ -1,6 +1,129 @@
 use rust_decimal::Decimal;
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Accent(String);
+
+impl Accent {
+    pub fn new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.len() == 7
+            && value.as_bytes()[0] == b'#'
+            && value.as_bytes()[1..]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            Ok(Self(value))
+        } else {
+            Err("accent must be lowercase #rrggbb".into())
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for Accent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::new(value).map_err(de::Error::custom)
+    }
+}
+
+impl fmt::Display for Accent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct FontScale(u8);
+
+impl FontScale {
+    pub const MIN: u8 = 100;
+    pub const MAX: u8 = 140;
+
+    pub fn new(value: u8) -> Result<Self, String> {
+        (Self::MIN..=Self::MAX)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or_else(|| "font-scale must be an integer from 100 to 140".into())
+    }
+
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for FontScale {
+    fn default() -> Self {
+        Self(100)
+    }
+}
+
+impl<'de> Deserialize<'de> for FontScale {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u8::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+impl fmt::Display for FontScale {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct FrameInset(u8);
+
+impl FrameInset {
+    pub const MIN: u8 = 30;
+    pub const MAX: u8 = 60;
+
+    pub fn new(value: u8) -> Result<Self, String> {
+        (Self::MIN..=Self::MAX)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or_else(|| "frame-inset must be an integer from 30 to 60".into())
+    }
+
+    pub const fn value(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for FrameInset {
+    fn default() -> Self {
+        Self(54)
+    }
+}
+
+impl<'de> Deserialize<'de> for FrameInset {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(u8::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
+}
+
+impl fmt::Display for FrameInset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct SourcePosition {
@@ -25,20 +148,25 @@ pub struct Config {
     pub font: String,
     #[serde(default = "default_density")]
     pub density: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<Accent>,
+    #[serde(default)]
+    pub font_scale: FontScale,
+    #[serde(default)]
+    pub frame_inset: FrameInset,
 }
-fn default_format() -> String {
+pub(crate) fn default_format() -> String {
     "code-comma-dot".into()
 }
-fn default_theme() -> String {
+pub(crate) fn default_theme() -> String {
     "printable".into()
 }
-fn default_font() -> String {
+pub(crate) fn default_font() -> String {
     "geist-mono".into()
 }
-fn default_density() -> String {
+pub(crate) fn default_density() -> String {
     "comfortable".into()
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Metadata {

@@ -11,6 +11,9 @@
     "format": { "enum": ["code-comma-dot", "code-dot-comma", "code-space-comma", "code-indian", "code-plain"], "default": "code-comma-dot" },
     "theme": { "enum": ["printable", "paper-white", "graphite", "blueprint", "ledger-pad", "solarized-light", "parchment", "midnight", "nord", "gruvbox-dark"], "default": "printable" },
     "font": { "enum": ["geist-mono", "cousine", "fira", "ibm-plex", "inconsolata", "jetbrains", "roboto", "source-code", "space", "ubuntu"], "default": "geist-mono" },
-    "density": { "enum": ["comfortable", "compact"], "default": "comfortable" }
+    "density": { "enum": ["comfortable", "compact"], "default": "comfortable" },
+    "accent": { "type": "string", "pattern": "^#[0-9a-f]{6}$" },
+    "font-scale": { "type": "integer", "minimum": 100, "maximum": 140, "default": 100 },
+    "frame-inset": { "type": "integer", "minimum": 30, "maximum": 60, "default": 54 }
   }
 }

@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process;
 use ttyinv_cli::exit;
 use ttyinv_core::{
-    EditOperation, EditRequest, MAX_SOURCE_BYTES, Severity, apply_edit, revision, schema_json,
-    structure_manifest, validate,
+    apply_edit, revision, schema_json, structure_manifest, validate, EditOperation, EditRequest,
+    Severity, MAX_SOURCE_BYTES,
 };
 fn main() -> ! {
     process::exit(run(env::args().skip(1).collect()))

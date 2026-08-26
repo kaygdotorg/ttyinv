@@ -4,6 +4,9 @@ format: code-comma-dot
 theme: printable
 font: geist-mono
 density: comfortable
+accent: "#2f6fed"
+font-scale: 100
+frame-inset: 54
 ---
 
 # Consulting services
