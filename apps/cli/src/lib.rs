@@ -10,7 +10,7 @@ pub mod exit {
     pub const INPUT: i32 = 3;
     /// The command cannot write its output.
     pub const OUTPUT: i32 = 4;
-    /// Reserved until rendering lands.
+    /// Rendering failed after valid input and options were accepted.
     pub const RENDER: i32 = 5;
     /// Reserved for a future internal failure boundary.
     pub const INTERNAL: i32 = 70;

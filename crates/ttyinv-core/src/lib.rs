@@ -8,9 +8,11 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 mod model;
+mod render;
+pub use render::*;
 pub const MAX_SOURCE_BYTES: usize = 128 * 1024;
 pub const MAX_EDIT_BYTES: usize = 128 * 1024;
-pub const SCHEMA_JSON: &str = include_str!("../../../schema/ttyinv-v2.schema.json");
+pub const SCHEMA_JSON: &str = include_str!("../schema/ttyinv-v2.schema.json");
 pub fn schema_json() -> &'static str {
     SCHEMA_JSON
 }

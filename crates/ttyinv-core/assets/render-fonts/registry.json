@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "fonts": [
+    {
+      "id": "geist-mono",
+      "label": "Geist Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "geist-mono-regular.ttf",
+        "sha256": "42d8ad2e610238e64e8abfcde3037c63f7850a73928742b7ab7229d897bcb155",
+        "source": "https://github.com/vercel/geist-font/releases/download/v1.7.2/geist-font-v1.7.2.zip#geist-font/GeistMono/ttf/GeistMono-Regular.ttf",
+        "weight": 400,
+        "family": "Geist Mono",
+        "postscript": "GeistMono-Regular",
+        "name": "Geist Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "geist-mono-semibold.ttf",
+        "sha256": "8b6e127117b03046495b40d4227de66bf5f81f7fe2f4546ee578e89738052314",
+        "source": "https://github.com/vercel/geist-font/releases/download/v1.7.2/geist-font-v1.7.2.zip#geist-font/GeistMono/ttf/GeistMono-SemiBold.ttf",
+        "weight": 600,
+        "family": "Geist Mono SemiBold",
+        "postscript": "GeistMono-SemiBold",
+        "name": "Geist Mono SemiBold"
+      }
+    },
+    {
+      "id": "cousine",
+      "label": "Cousine",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "cousine-regular.ttf",
+        "sha256": "1da22250675fc4c42fcf3a9736c44bc0570516105331443b663fd5cfbd1412fe",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/cousine/Cousine-Regular.ttf",
+        "weight": 400,
+        "family": "Cousine",
+        "postscript": "Cousine-Regular",
+        "name": "Cousine Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "cousine-semibold.ttf",
+        "sha256": "17c8a7245156d2253531c9e529474937b09d9f641c5ae7695c5e33f22822eef4",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/cousine/Cousine-Bold.ttf",
+        "weight": 700,
+        "family": "Cousine",
+        "postscript": "Cousine-Bold",
+        "name": "Cousine Bold"
+      }
+    },
+    {
+      "id": "fira",
+      "label": "Fira Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "fira-regular.ttf",
+        "sha256": "2e00b0cf3106a3d792f35711b7722740b76c02ee7300ea8c60f940584b7a8ac9",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/firamono/FiraMono-Regular.ttf",
+        "weight": 400,
+        "family": "Fira Mono",
+        "postscript": "FiraMono-Regular",
+        "name": "Fira Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "fira-semibold.ttf",
+        "sha256": "61f0ca3ae72a83deb807040f314e1b8b4e40b08213df243db9fd430095cab305",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/firamono/FiraMono-Bold.ttf",
+        "weight": 700,
+        "family": "Fira Mono",
+        "postscript": "FiraMono-Bold",
+        "name": "Fira Mono Bold"
+      }
+    },
+    {
+      "id": "ibm-plex",
+      "label": "IBM Plex Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "ibm-plex-regular.ttf",
+        "sha256": "6a3412f058c7d8dfd9170c41e85ade48e5156ecb89356110ca57a0a27734af46",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/ibmplexmono/IBMPlexMono-Regular.ttf",
+        "weight": 400,
+        "family": "IBM Plex Mono",
+        "postscript": "IBMPlexMono-Regular",
+        "name": "IBM Plex Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "ibm-plex-semibold.ttf",
+        "sha256": "d3c38e55c78f5b0f28009fddba4834ec503278936a5986032424c9bd2d23aa46",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/ibmplexmono/IBMPlexMono-SemiBold.ttf",
+        "weight": 600,
+        "family": "IBM Plex Mono SemiBold",
+        "postscript": "IBMPlexMono-SemiBold",
+        "name": "IBM Plex Mono SemiBold"
+      }
+    },
+    {
+      "id": "inconsolata",
+      "label": "Inconsolata",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "inconsolata-regular.ttf",
+        "sha256": "0f11ac40d1618e1aa1adb7322a14980a0b0c943421124022073f83236d15f0d5",
+        "source": "https://raw.githubusercontent.com/google/fonts/0f203e3740b5eb77e0b179dff1e5869482676782/ofl/inconsolata/static/Inconsolata-Regular.ttf",
+        "weight": 400,
+        "family": "Inconsolata",
+        "postscript": "Inconsolata-Regular",
+        "name": "Inconsolata Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "inconsolata-semibold.ttf",
+        "sha256": "8152d7cd053dc594e0e85f1e87aa11d062997e67f9f556062af14a89b63f6b10",
+        "source": "https://raw.githubusercontent.com/google/fonts/0f203e3740b5eb77e0b179dff1e5869482676782/ofl/inconsolata/static/Inconsolata-SemiBold.ttf",
+        "weight": 600,
+        "family": "Inconsolata SemiBold",
+        "postscript": "Inconsolata-SemiBold",
+        "name": "Inconsolata SemiBold"
+      }
+    },
+    {
+      "id": "jetbrains",
+      "label": "JetBrains Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "jetbrains-regular.ttf",
+        "sha256": "e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1",
+        "source": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/02bb50b082dad9ef8a0f33ac393839202b760223/fonts/ttf/JetBrainsMono-Regular.ttf",
+        "weight": 400,
+        "family": "JetBrains Mono",
+        "postscript": "JetBrainsMono-Regular",
+        "name": "JetBrains Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "jetbrains-semibold.ttf",
+        "sha256": "12d4b18fe6e1af528e4bea69cb0997aeff22f9e52fccffcf66342dd88aa32ab8",
+        "source": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/02bb50b082dad9ef8a0f33ac393839202b760223/fonts/ttf/JetBrainsMono-SemiBold.ttf",
+        "weight": 472,
+        "family": "JetBrains Mono SemiBold",
+        "postscript": "JetBrainsMono-SemiBold",
+        "name": "JetBrains Mono SemiBold"
+      }
+    },
+    {
+      "id": "roboto",
+      "label": "Roboto Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "roboto-regular.ttf",
+        "sha256": "af0bff7599c3df3831755c16e39b3c496df74b8c8d8a1161b14dc8461be17cb4",
+        "source": "https://raw.githubusercontent.com/googlefonts/RobotoMono/111eb14e367888c9374da4da0b018e72cf8ac46d/fonts/ttf/RobotoMono-Regular.ttf",
+        "weight": 400,
+        "family": "Roboto Mono",
+        "postscript": "RobotoMono-Regular",
+        "name": "Roboto Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "roboto-bold.ttf",
+        "sha256": "3ecf35e5e87accc7578b605d1f5f0bc30d88b195d6807bec8a0c57f6aa95c4db",
+        "source": "https://raw.githubusercontent.com/googlefonts/RobotoMono/111eb14e367888c9374da4da0b018e72cf8ac46d/fonts/ttf/RobotoMono-Bold.ttf",
+        "weight": 700,
+        "family": "Roboto Mono",
+        "postscript": "RobotoMono-Bold",
+        "name": "Roboto Mono Bold"
+      }
+    },
+    {
+      "id": "source-code",
+      "label": "Source Code Pro",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "source-code-regular.ttf",
+        "sha256": "74bd80d3e42a08517cd7e1108ba3d86f2da29ac0f3065be95e0357956ab9db37",
+        "source": "https://raw.githubusercontent.com/adobe-fonts/source-code-pro/803b7e23ec97ae58b6232ea76519a76d428ba268/TTF/SourceCodePro-Regular.ttf",
+        "weight": 400,
+        "family": "Source Code Pro",
+        "postscript": "SourceCodePro-Regular",
+        "name": "Source Code Pro"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "source-code-semibold.ttf",
+        "sha256": "014a0fdf42504ee1faf719a96eab5f9ffdade793f1d5c5729ad4606f2aedc765",
+        "source": "https://raw.githubusercontent.com/adobe-fonts/source-code-pro/803b7e23ec97ae58b6232ea76519a76d428ba268/TTF/SourceCodePro-Semibold.ttf",
+        "weight": 600,
+        "family": "Source Code Pro Semibold",
+        "postscript": "SourceCodePro-Semibold",
+        "name": "Source Code Pro Semibold"
+      }
+    },
+    {
+      "id": "space",
+      "label": "Space Mono",
+      "license": "OFL-1.1",
+      "regular": {
+        "slot": "regular",
+        "file": "space-regular.ttf",
+        "sha256": "95837e182baeeada83368f7748db28357f0a1b75c6b84ff7065b5edf933c8e18",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/spacemono/SpaceMono-Regular.ttf",
+        "weight": 400,
+        "family": "Space Mono",
+        "postscript": "SpaceMono-Regular",
+        "name": "Space Mono Regular"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "space-semibold.ttf",
+        "sha256": "405e73d41afb7e5906efce206a326af5c956f38e255f35421c260e861e599c59",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ofl/spacemono/SpaceMono-Bold.ttf",
+        "weight": 700,
+        "family": "Space Mono",
+        "postscript": "SpaceMono-Bold",
+        "name": "Space Mono Bold"
+      }
+    },
+    {
+      "id": "ubuntu",
+      "label": "Ubuntu Mono",
+      "license": "Ubuntu Font Licence 1.0",
+      "regular": {
+        "slot": "regular",
+        "file": "ubuntu-regular.ttf",
+        "sha256": "b35dd9d2131d5d83a9b87fe9ad22c6288fa3d17688d43302c14da29812417d63",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ufl/ubuntumono/UbuntuMono-Regular.ttf",
+        "weight": 400,
+        "family": "Ubuntu Mono",
+        "postscript": "UbuntuMono-Regular",
+        "name": "Ubuntu Mono"
+      },
+      "semibold": {
+        "slot": "semibold",
+        "file": "ubuntu-semibold.ttf",
+        "sha256": "11f15c3a6bbd998a8695fdefb3475931c3789aa035d7546f2efe78e83b352f6b",
+        "source": "https://raw.githubusercontent.com/google/fonts/6a003b5eb672dc8bf5bff5937cf5863f8b175445/ufl/ubuntumono/UbuntuMono-Bold.ttf",
+        "weight": 700,
+        "family": "Ubuntu Mono",
+        "postscript": "UbuntuMono-Bold",
+        "name": "Ubuntu Mono Bold"
+      }
+    }
+  ]
+}

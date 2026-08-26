@@ -12,7 +12,12 @@ from decimal import Decimal, ROUND_HALF_EVEN
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-EXPONENTS = {"JPY": 0, "KWD": 3}
+EXPONENTS = {
+    "BHD": 3, "IQD": 3, "JOD": 3, "KWD": 3, "LYD": 3, "OMR": 3, "TND": 3,
+    "BIF": 0, "CLP": 0, "DJF": 0, "GNF": 0, "ISK": 0, "JPY": 0,
+    "KMF": 0, "KRW": 0, "PYG": 0, "RWF": 0, "UGX": 0, "UYI": 0,
+    "VND": 0, "VUV": 0, "XAF": 0, "XOF": 0, "XPF": 0,
+}
 REQUIRED = {
     "fixture", "source", "valid", "config", "currency", "currency_exponent",
     "content_order", "sections", "fixed_blocks", "grand_total", "links",
@@ -81,7 +86,7 @@ def source_amounts(body_lines: list[str], currency: str) -> list[str]:
          if heading in {"rate", "unitprice", "price"}),
         None,
     )
-    exponent = {"JPY": 0, "KWD": 3}.get(currency, 2)
+    exponent = EXPONENTS.get(currency, 2)
     output = []
     for row in rows:
         value = row[amount_column].strip()
@@ -93,6 +98,20 @@ def source_amounts(body_lines: list[str], currency: str) -> list[str]:
     return output
 
 
+
+def rendered_amount(value: str, currency: str, source_text: str) -> str:
+    format_name = next(
+        (line.split(":", 1)[1].strip() for line in source_text.splitlines() if line.startswith("format:")),
+        "code-comma-dot",
+    )
+    exponent = EXPONENTS.get(currency, 2)
+    amount = Decimal(value).quantize(Decimal(1).scaleb(-exponent), rounding=ROUND_HALF_EVEN)
+    rendered = format(amount, f",.{exponent}f")
+    if format_name == "code-plain":
+        return rendered.replace(",", "")
+    if format_name == "code-dot-comma":
+        return rendered.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+    return rendered
 def source_blocks(source: str) -> tuple[list[str], list[dict[str, object]], dict[str, bool], dict[str, bool]]:
     body = source.split("---\n", 2)[-1]
     lines = body.splitlines()
@@ -137,28 +156,63 @@ def source_blocks(source: str) -> tuple[list[str], list[dict[str, object]], dict
     return content, ordinary, fixed, fixed_breaks
 
 
-def run_cli(command: list[str], source_path: Path) -> dict[str, object] | None:
+def run_render(command: list[str], source_path: Path, fmt: str) -> bytes | None:
     try:
-        result = subprocess.run(command + [str(source_path), "--json"], cwd=ROOT.parent.parent, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            command + [str(source_path), "--format", fmt, "--stdout"],
+            cwd=ROOT.parent.parent,
+            capture_output=True,
+            check=False,
+        )
     except OSError:
         return None
     if result.returncode != 0:
-        fail(f"canonical CLI failed for {source_path.name}: {result.stderr.strip() or result.stdout.strip()}")
+        fail(f"canonical CLI render failed for {source_path.name} ({fmt}): {result.stderr.decode(errors='replace').strip()}")
+    payload = result.stdout
+    signatures = {"html": b"<!doctype html>", "pdf": b"%PDF-", "png": b"\x89PNG\r\n\x1a\n"}
+    if not payload.startswith(signatures[fmt]):
+        fail(f"{source_path.name}: {fmt} output has an invalid signature")
+    return payload
+
+def png_dimensions(payload: bytes) -> tuple[int, int]:
+    if len(payload) < 24 or payload[:8] != b"\x89PNG\r\n\x1a\n":
+        fail("PNG signature or IHDR is missing")
+    return int.from_bytes(payload[16:20], "big"), int.from_bytes(payload[20:24], "big")
+
+def run_cli(command: list[str], source_path: Path) -> dict[str, object]:
     try:
-        return json.loads(result.stdout)
-    except json.JSONDecodeError as error:
-        fail(f"canonical CLI emitted non-JSON for {source_path.name}: {error}")
+        result = subprocess.run(
+            command + [str(source_path), "--json"],
+            cwd=ROOT.parent,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        fail(f"{source_path.name}: CLI failed to start: {exc}")
+    if result.returncode != 0:
+        fail(
+            f"{source_path.name}: CLI returned {result.returncode}: "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        fail(f"{source_path.name}: CLI returned invalid JSON: {exc}")
+    if not isinstance(value, dict):
+        fail(f"{source_path.name}: CLI JSON response must be an object")
+    return value
 
 
-def cli_commands() -> tuple[list[str], list[str]] | None:
+
+def cli_commands() -> tuple[list[str], list[str], list[str]] | None:
     binary = os.environ.get("TTYINV_BIN")
     if binary:
-        return [binary, "validate"], [binary, "sections"]
+        return [binary, "validate"], [binary, "sections"], [binary, "render"]
     cargo = shutil.which("cargo")
     manifest = ROOT.parent / "Cargo.toml"
     if cargo and manifest.exists():
         prefix = [cargo, "run", "--quiet", "--manifest-path", str(manifest), "--bin", "ttyinv", "--"]
-        return prefix + ["validate"], prefix + ["sections"]
+        return prefix + ["validate"], prefix + ["sections"], prefix + ["render"]
     return None
 
 
@@ -208,6 +262,18 @@ def check_contract(record: dict[str, object], source_path: Path) -> None:
         fail(f"{record['fixture']}: diagnostics must be a list")
     if not isinstance(record["links"], list) or not isinstance(record["images"], list):
         fail(f"{record['fixture']}: links and images must be lists")
+    source_text = source_path.read_text(encoding="utf-8")
+    source_links = re.findall(r"^- Website:\s*(https?://\S+)\s*$", source_text, re.MULTILINE)
+    source_links.extend(re.findall(r"(?<!!)\[[^\]]+\]\((https?://[^)]+)\)", source_text))
+    if sorted(str(value) for value in record["links"]) != sorted(source_links):
+        fail(f"{record['fixture']}: link manifest does not match authored links")
+    source_images = [
+        {"alt": alt, "src": src}
+        for alt, src in re.findall(r"!\[([^\]]+)\]\(([^)]+)\)", source_text)
+    ]
+    manifest_images = [{"alt": str(item["alt"]), "src": str(item["src"])} for item in record["images"]]
+    if manifest_images != source_images:
+        fail(f"{record['fixture']}: image manifest does not match authored images")
 
 
 def main() -> int:
@@ -240,6 +306,49 @@ def main() -> int:
             expected_manifest = [{"index": i, "title": s["title"], "body": s["body"], "gap": s["directives"]["gap"], "page_break_before": s["directives"]["page_break_before"], "summary_only": s["directives"]["summary_only"]} for i, s in enumerate(record["sections"])]
             if sections["ordinary_sections"] != expected_manifest:
                 fail(f"{entry['id']}: sections output differs from expected directives")
+            for fmt in ("html", "pdf", "png"):
+                payload = run_render(commands[2], source_path, fmt)
+                if payload is None:
+                    fail(f"{entry['id']}: renderer unavailable for {fmt}")
+                repeat = run_render(commands[2], source_path, fmt)
+                if repeat != payload:
+                    fail(f"{entry['id']}: {fmt} output is not deterministic")
+                page_breaks = sum(
+                    bool(item["page_break_before"])
+                    for item in record["fixed_blocks"]
+                ) + sum(bool(item["directives"]["page_break_before"]) for item in record["sections"])
+                source_text = source_path.read_text(encoding="utf-8")
+                if fmt == "html":
+                    html = payload.decode("utf-8")
+                    if "<article class=\"page\">" not in html:
+                        fail(f"{entry['id']}: HTML has no page article")
+                    title = next(line[2:].strip() for line in source_text.splitlines() if line.startswith("# "))
+                    if f"<h1>{title}</h1>" not in html:
+                        fail(f"{entry['id']}: HTML title hierarchy/content mismatch")
+                    expected_total = rendered_amount(record["grand_total"], record["currency"], source_text)
+                    if f"TOTAL: {expected_total} {record['currency']}" not in html:
+                        fail(f"{entry['id']}: HTML total content mismatch")
+                    if "**" in source_text and "<strong>" not in html:
+                        fail(f"{entry['id']}: strong Markdown semantics missing")
+                    if re.search(r"(?<!\\)\*[^*]+\*", source_text) and "<em>" not in html:
+                        fail(f"{entry['id']}: emphasis Markdown semantics missing")
+                    used_gaps = set(re.findall(r'class="gap-([0-3])"', html))
+                    expected_gaps = {
+                        str({"none": 0, "tight": 1, "standard": 2, "roomy": 3}[item["directives"]["gap"]])
+                        for item in record["sections"]
+                    }
+                    if not expected_gaps.issubset(used_gaps):
+                        fail(f"{entry['id']}: section gap directives are not rendered")
+                    if ":---:" in source_text and 'class="center"' not in html:
+                        fail(f"{entry['id']}: centered table alignment missing")
+                elif fmt == "pdf":
+                    pages = payload.count(b"/Type /Page") + payload.count(b"/Type/Page")
+                    if pages < 1 or pages <= page_breaks:
+                        fail(f"{entry['id']}: PDF pagination does not reflect directives")
+                elif fmt == "png":
+                    width, height = png_dimensions(payload)
+                    if width != 595 or height < 842 or height % 842:
+                        fail(f"{entry['id']}: PNG geometry is not A4 page-stacked")
             cli_checked += 1
     if commands:
         print(f"checked {len(entries)} fixtures and canonical CLI output ({cli_checked} fixtures)")

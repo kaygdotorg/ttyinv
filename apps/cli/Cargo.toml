@@ -16,4 +16,4 @@ path = "src/lib.rs"
 [dependencies]
 serde_json.workspace = true
 serde_yaml.workspace = true
-ttyinv-core = { path = "../../crates/ttyinv-core" }
+ttyinv-core = { version = "0.1.0", path = "../../crates/ttyinv-core" }

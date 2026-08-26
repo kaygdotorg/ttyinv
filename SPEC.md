@@ -63,8 +63,14 @@ Frontmatter contains only these keys:
 
 The UI may offer font-scale steps of five, but parsers accept every integer in range.
 `font-weight` controls the base text weight. Semantic headings and strong text remain
-semibold.
-These values configure adapters only; the core model does not define renderer geometry.
+semibold. The core renderer resolves these values into one immutable layout plan.
+
+The public `ttyinv-core::render` interface accepts source text and typed `RenderOptions`.
+It returns owned bytes with MIME type, extension, page count, dimensions, and warnings.
+Supported output formats are self-contained HTML, PDF, and PNG. Rendering never fetches
+external assets. Images must be validated base64 image data URLs within the strict
+renderer asset limit. Invalid documents, options, assets, and oversize output return
+typed render errors.
 
 Formats are `code-comma-dot`, `code-dot-comma`, `code-space-comma`, `code-indian`,
 and `code-plain`. Themes are `printable`, `paper-white`, `graphite`, `blueprint`,
@@ -103,9 +109,10 @@ local path or link are required. The engine never fetches an image.
 
 An ordinary section is a column-zero H2 heading with exactly one body kind. A body is
 one GFM table or Markdown prose. Prose supports paragraphs, emphasis, links, inline
-code, lists, and line breaks. Nested H2 headings are not allowed. Fenced code is prose;
-headings and directives inside fences are not grammar. Empty or prose-only documents
-are valid after the required fixed parties.
+code, lists, and hard line breaks. Every output format uses the same parsed inline
+semantics; delimiters never appear as rendered content. Fenced code is prose; headings
+and directives inside fences are not grammar. Empty or prose-only documents are valid
+after the required fixed parties.
 
 Reserved ordinary names are impossible. The reserved names are `From`, `Bill to`,
 `Settlements`, `Payment`, and `Signature`. Ordinary sections are indexed from zero.

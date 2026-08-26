@@ -13,4 +13,5 @@ crate-type = ["cdylib", "rlib"]
 serde.workspace = true
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"
-ttyinv-core = { path = "../ttyinv-core" }
+js-sys = "0.3"
+ttyinv-core = { version = "0.1.0", path = "../ttyinv-core" }
