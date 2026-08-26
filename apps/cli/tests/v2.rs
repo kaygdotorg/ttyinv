@@ -9,7 +9,7 @@ fn run(args: &[&str]) -> std::process::Output {
         .unwrap()
 }
 fn temp(name: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("ttyinv-v2-{name}-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("ttyinv-v2-{name}-{}.md", std::process::id()));
     fs::write(&path, SOURCE).unwrap();
     path
 }
@@ -119,4 +119,120 @@ fn missing_and_zero_indices_are_usage_errors() {
         assert_eq!(fs::read_to_string(&path).unwrap(), SOURCE);
     }
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn set_scalar_supports_all_output_modes() {
+    let path = temp("scalar");
+    let original = fs::read_to_string(&path).unwrap();
+
+    let check = run(&[
+        "edit",
+        "set-scalar",
+        path.to_str().unwrap(),
+        "--path",
+        "title",
+        "--value",
+        "Changed",
+        "--check",
+    ]);
+    assert_eq!(check.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let stdout = run(&[
+        "edit",
+        "set-scalar",
+        path.to_str().unwrap(),
+        "--path",
+        "title",
+        "--value",
+        "Changed",
+        "--stdout",
+    ]);
+    assert!(stdout.status.success());
+    assert!(String::from_utf8_lossy(&stdout.stdout).contains("# Changed"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let json = run(&[
+        "edit",
+        "set-scalar",
+        path.to_str().unwrap(),
+        "--path",
+        "title",
+        "--value",
+        "Changed",
+        "--json",
+    ]);
+    assert!(json.status.success());
+    assert!(String::from_utf8_lossy(&json.stdout).contains("\"source\""));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let atomic = run(&[
+        "edit",
+        "set-scalar",
+        path.to_str().unwrap(),
+        "--path",
+        "title",
+        "--value",
+        "Changed",
+    ]);
+    assert!(atomic.status.success());
+    assert!(fs::read_to_string(&path).unwrap().contains("# Changed"));
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn convert_round_trips_structured_formats_and_validates_by_extension() {
+    let source = temp("convert-source");
+    let json_path = source.with_extension("json");
+    let yaml_path = source.with_extension("yaml");
+
+    let json = run(&[
+        "convert",
+        source.to_str().unwrap(),
+        "--to",
+        "json",
+        "--output",
+        json_path.to_str().unwrap(),
+    ]);
+    assert!(json.status.success());
+    let valid_json = run(&["validate", json_path.to_str().unwrap(), "--json"]);
+    assert!(valid_json.status.success());
+    assert!(String::from_utf8_lossy(&valid_json.stdout).contains("\"valid\":true"));
+
+    let yaml = run(&[
+        "convert",
+        source.to_str().unwrap(),
+        "--to",
+        "yaml",
+        "--output",
+        yaml_path.to_str().unwrap(),
+    ]);
+    assert!(yaml.status.success());
+    let valid_yaml = run(&["validate", yaml_path.to_str().unwrap()]);
+    assert!(valid_yaml.status.success());
+
+    let canonical = run(&["convert", json_path.to_str().unwrap(), "--to", "markdown"]);
+    assert!(canonical.status.success());
+    assert!(!canonical.stdout.is_empty());
+
+    let _ = fs::remove_file(source);
+    let _ = fs::remove_file(json_path);
+    let _ = fs::remove_file(yaml_path);
+}
+
+#[test]
+fn adapters_require_known_input_or_explicit_from_and_help_is_available() {
+    let unknown = std::env::temp_dir().join(format!("ttyinv-v2-unknown-{}", std::process::id()));
+    fs::write(&unknown, SOURCE).unwrap();
+    let validate = run(&["validate", unknown.to_str().unwrap()]);
+    assert_eq!(validate.status.code(), Some(2));
+    let explicit = run(&["validate", unknown.to_str().unwrap(), "--from", "markdown"]);
+    assert!(explicit.status.success());
+
+    let help = run(&["convert", "--help"]);
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--to markdown|json|yaml"));
+
+    let _ = fs::remove_file(unknown);
 }

@@ -14,7 +14,7 @@ The workspace contains:
 
 - `ttyinv-core`: typed `Document`, Markdown parser, canonical serializer, JSON/YAML
   adapters, validation, and versioned edit operations;
-- `ttyinv-cli`: `validate`, `schema`, `sections`, and `edit` commands;
+- `ttyinv-cli`: `validate`, `convert`, `schema`, `sections`, and `edit` commands;
 - `ttyinv-wasm`: browser exports for validation, structure manifests, revisions, and
   edit operations.
 
@@ -22,15 +22,24 @@ The workspace contains:
 
 ```console
 ttyinv validate invoice.md
-ttyinv validate invoice.md --json
+ttyinv validate invoice.json --json
+ttyinv convert invoice.md --to json --output invoice.json
+ttyinv convert invoice.json --to markdown --stdout
 ttyinv schema --output ttyinv-v2.schema.json
 ttyinv sections invoice.md --json
 ttyinv edit move-section invoice.md --from 3 --to 1 --stdout
 ttyinv edit set-gap invoice.md --section 2 --gap roomy --check
+ttyinv edit set-scalar invoice.md --path metadata.terms --value "Net 30" --stdout
 ```
 
 CLI section positions are one based. Core edit operations use zero-based ordinary
 section indices. In-place edits use a sibling temporary file and rename.
+
+`validate` and `convert` infer input from `.md`, `.json`, `.yaml`, and `.yml`.
+Use `--from` for stdin or another extension. Conversion writes canonical Markdown;
+JSON and YAML use the same typed `Document` model. Conversion defaults to stdout,
+while `--output` uses an atomic replacement. `edit` defaults to an atomic
+in-place replacement; `--stdout`, `--check`, and `--json` never modify the input.
 
 ## Format
 
