@@ -40,12 +40,13 @@ one table or prose body. Immediately preceding `ttyinv` directives move with ord
 sections.
 
 Configuration IDs are explicit and stable. The default theme is `printable`. The default
-font is `geist-mono`. Optional `accent` uses strict lowercase `#rrggbb` syntax; when
-absent, adapters use the theme accent. `font-scale` defaults to `100` and accepts
-integer percentages from `100` through `140`. `frame-inset` defaults to `54` and accepts
-integer layout units from `30` through `60`. The UI may use five-point font-scale steps.
-These fields configure adapters; core parsing defines no renderer geometry. See
-[SPEC.md](SPEC.md) for all supported IDs and grammar rules.
+font is `geist-mono`, with base `font-weight` defaulting to `regular` (`regular` or
+`semibold`). Optional `accent` uses strict lowercase `#rrggbb` syntax; when absent,
+adapters use the theme accent. `font-scale` defaults to `100` and accepts integer
+percentages from `100` through `140`. `frame-inset` defaults to `54` and accepts integer
+layout units from `30` through `60`. The UI may use five-point font-scale steps. These
+fields configure adapters; headings and strong text remain semibold. See [SPEC.md](SPEC.md)
+for all supported IDs and grammar rules.
 
 ## Canonical example
 

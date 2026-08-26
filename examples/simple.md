@@ -3,6 +3,7 @@ schema: ttyinv/v2
 format: code-comma-dot
 theme: printable
 font: geist-mono
+font-weight: regular
 density: comfortable
 accent: "#2f6fed"
 font-scale: 100

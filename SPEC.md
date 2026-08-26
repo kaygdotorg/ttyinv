@@ -16,6 +16,7 @@ schema: ttyinv/v2
 format: code-comma-dot
 theme: printable
 font: geist-mono
+font-weight: regular
 density: comfortable
 accent: "#2f6fed"
 font-scale: 100
@@ -54,12 +55,15 @@ Frontmatter contains only these keys:
 - `format` defaults to `code-comma-dot`.
 - `theme` defaults to `printable`.
 - `font` defaults to `geist-mono`.
+- `font-weight` defaults to `regular` and accepts `regular` or `semibold`.
 - `density` defaults to `comfortable`.
 - `accent` is optional. It must be lowercase `#rrggbb`; absent uses the theme accent.
 - `font-scale` defaults to `100` and accepts integer percentages from `100` to `140`.
 - `frame-inset` defaults to `54` and accepts integer layout units from `30` to `60`.
 
 The UI may offer font-scale steps of five, but parsers accept every integer in range.
+`font-weight` controls the base text weight. Semantic headings and strong text remain
+semibold.
 These values configure adapters only; the core model does not define renderer geometry.
 
 Formats are `code-comma-dot`, `code-dot-comma`, `code-space-comma`, `code-indian`,
@@ -151,12 +155,12 @@ remain links.
 Markdown is canonical and serializes with LF and no BOM. Its serializer emits
 deterministic frontmatter, metadata order, fixed block order, directive order, and
 table syntax. UTF-8 BOM and CRLF are accepted at input.
-
 JSON and YAML parse through the same semantic validator and escape canonical Markdown
 structure; injected headings, labels, directives, and table cells are rejected. Config
-DTO keys use `font_scale` and `frame_inset`; Markdown frontmatter uses `font-scale` and
-`frame-inset`. Core source and edit inputs are limited to 128 KiB. The WASM decoded
-request limit is 256 KiB, including operation paths and values.
+DTO keys use `font_weight`, `font_scale`, and `frame_inset`; Markdown frontmatter uses
+`font-weight`, `font-scale`, and `frame-inset`. Core source and edit inputs are limited
+to 128 KiB. The WASM decoded request limit is 256 KiB, including operation paths and
+values.
 
 ```json
 {"source":"...","base_revision":"...","sequence":7,

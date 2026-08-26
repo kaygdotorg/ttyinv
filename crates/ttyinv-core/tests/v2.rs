@@ -1,6 +1,7 @@
 use ttyinv_core::{
     apply_edit, document, parse_json, parse_yaml, revision, serialize_markdown, to_json, to_yaml,
-    validate, EditOperation, EditRequest, FontScale, FrameInset, Gap, SectionBody, TableAlignment,
+    validate, EditOperation, EditRequest, FontScale, FontWeight, FrameInset, Gap, SectionBody,
+    TableAlignment,
 };
 
 const SOURCE: &str = include_str!("../../../examples/simple.md");
@@ -568,6 +569,7 @@ fn appearance_defaults_boundaries_and_strict_values() {
         .lines()
         .filter(|line| {
             !line.starts_with("accent:")
+                && !line.starts_with("font-weight:")
                 && !line.starts_with("font-scale:")
                 && !line.starts_with("frame-inset:")
         })
@@ -575,6 +577,7 @@ fn appearance_defaults_boundaries_and_strict_values() {
         .join("\n");
     let defaults = document(&without_appearance).expect("appearance defaults");
     assert!(defaults.config.accent.is_none());
+    assert_eq!(defaults.config.font_weight, FontWeight::Regular);
     assert_eq!(defaults.config.font_scale, FontScale::default());
     assert_eq!(defaults.config.frame_inset, FrameInset::default());
 
@@ -590,6 +593,14 @@ fn appearance_defaults_boundaries_and_strict_values() {
             assert!(document(&source).is_ok(), "{field}={value}");
         }
     }
+    let weighted = SOURCE.replace("font-weight: regular", "font-weight: semibold");
+    assert_eq!(
+        document(&weighted)
+            .expect("semibold weight")
+            .config
+            .font_weight,
+        FontWeight::Semibold
+    );
     for replacement in [
         ("accent: \"#2f6fed\"", "accent: \"#2F6FED\""),
         ("accent: \"#2f6fed\"", "accent: \"#fff\""),
@@ -597,9 +608,12 @@ fn appearance_defaults_boundaries_and_strict_values() {
         ("font-scale: 100", "font-scale: 141"),
         ("frame-inset: 54", "frame-inset: 29"),
         ("frame-inset: 54", "frame-inset: 61"),
+        ("font-weight: semibold", "font-weight: bold"),
+        ("font-weight: semibold", "font-weight: 600"),
+        ("font-weight: semibold", "font_weight: semibold"),
         ("font-scale: 100", "font-scale: nope"),
     ] {
-        assert!(document(&SOURCE.replace(replacement.0, replacement.1)).is_err());
+        assert!(document(&weighted.replace(replacement.0, replacement.1)).is_err());
     }
 }
 
@@ -607,33 +621,79 @@ fn appearance_defaults_boundaries_and_strict_values() {
 fn appearance_canonical_order_adapters_and_edits() {
     let doc = document(SOURCE).expect("appearance source");
     let markdown = serialize_markdown(&doc);
+    let font = markdown.find("font:").expect("font");
+    let weight = markdown.find("font-weight:").expect("font weight");
     let density = markdown.find("density:").expect("density");
     let accent = markdown.find("accent:").expect("accent");
     let scale = markdown.find("font-scale:").expect("font scale");
     let inset = markdown.find("frame-inset:").expect("frame inset");
-    assert!(density < accent && accent < scale && scale < inset);
+    assert!(
+        font < weight && weight < density && density < accent && accent < scale && scale < inset
+    );
+    assert!(markdown.contains("font-weight: regular"));
     assert!(markdown.contains("accent: \"#2f6fed\""));
 
+    let weighted = SOURCE.replace("font-weight: regular", "font-weight: semibold");
+    let doc = document(&weighted).expect("semibold source");
+    assert_eq!(doc.config.font_weight, FontWeight::Semibold);
     let json = to_json(&doc).expect("JSON");
     let yaml = to_yaml(&doc).expect("YAML");
-    assert!(json.contains("\"font_scale\": 100"));
-    assert!(json.contains("\"frame_inset\": 54"));
-    assert!(yaml.contains("font_scale: 100"));
-    assert!(yaml.contains("frame_inset: 54"));
+    assert!(json.contains("\"font_weight\": \"semibold\""));
+    assert!(yaml.contains("font_weight: semibold"));
     assert_eq!(
         parse_json(&json).expect("JSON parse").config,
         parse_yaml(&yaml).expect("YAML parse").config
     );
+    for (needle, replacement) in [
+        (
+            "\"font_weight\": \"semibold\"",
+            "\"font_weight\": \"regular\"",
+        ),
+        ("\"font_weight\": \"semibold\"", "\"font_weight\": \"bold\""),
+        ("\"font_weight\": \"semibold\"", "\"font_weight\": 600"),
+    ] {
+        let candidate = json.replace(needle, replacement);
+        if replacement.ends_with("regular\"") {
+            assert_eq!(
+                parse_json(&candidate)
+                    .expect("regular JSON")
+                    .config
+                    .font_weight,
+                FontWeight::Regular
+            );
+        } else {
+            assert!(parse_json(&candidate).is_err());
+        }
+    }
 
     let edited = apply_edit(request(
-        SOURCE,
+        &weighted,
         EditOperation::SetScalar {
-            path: "config.font_scale".into(),
-            value: "125".into(),
+            path: "config.font_weight".into(),
+            value: "regular".into(),
         },
     ));
     assert!(edited.diagnostics.is_empty(), "{:?}", edited.diagnostics);
-    assert!(edited.source.contains("font-scale: 125"));
+    assert!(edited.source.contains("font-weight: regular"));
+    assert!(!edited.source.contains("font-weight: semibold"));
     assert!(edited.source.contains("accent: \"#2f6fed\""));
     assert!(edited.source.contains("## Contract fees"));
+
+    let without_weight = SOURCE.replace("font-weight: regular\n", "");
+    let inserted = apply_edit(request(
+        &without_weight,
+        EditOperation::SetScalar {
+            path: "config.font_weight".into(),
+            value: "semibold".into(),
+        },
+    ));
+    assert!(
+        inserted.diagnostics.is_empty(),
+        "{:?}",
+        inserted.diagnostics
+    );
+    let inserted_font = inserted.source.find("font:").expect("font");
+    let inserted_weight = inserted.source.find("font-weight:").expect("weight");
+    let inserted_density = inserted.source.find("density:").expect("density");
+    assert!(inserted_font < inserted_weight && inserted_weight < inserted_density);
 }

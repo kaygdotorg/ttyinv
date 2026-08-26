@@ -423,6 +423,8 @@ struct FrontmatterConfig {
     theme: String,
     #[serde(default = "model::default_font")]
     font: String,
+    #[serde(rename = "font-weight", default)]
+    font_weight: FontWeight,
     #[serde(default = "model::default_density")]
     density: String,
     #[serde(default)]
@@ -440,6 +442,7 @@ impl From<FrontmatterConfig> for Config {
             format: value.format,
             theme: value.theme,
             font: value.font,
+            font_weight: value.font_weight,
             density: value.density,
             accent: value.accent,
             font_scale: value.font_scale,
@@ -455,6 +458,9 @@ fn invalid_appearance_config(raw: &serde_yaml::Value) -> bool {
     mapping
         .get(string_key("accent"))
         .is_some_and(|value| serde_yaml::from_value::<Accent>(value.clone()).is_err())
+        || mapping
+            .get(string_key("font-weight"))
+            .is_some_and(|value| serde_yaml::from_value::<FontWeight>(value.clone()).is_err())
         || mapping
             .get(string_key("font-scale"))
             .is_some_and(|value| serde_yaml::from_value::<FontScale>(value.clone()).is_err())
@@ -1553,11 +1559,12 @@ pub fn serialize_markdown(d: &Document) -> String {
         .as_ref()
         .map_or_else(String::new, |value| format!("accent: \"{value}\"\n"));
     let mut s = format!(
-        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\ndensity: {}\n{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
+        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\nfont-weight: {}\ndensity: {}\n{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
         escape_line(&d.config.schema),
         escape_line(&d.config.format),
         escape_line(&d.config.theme),
         escape_line(&d.config.font),
+        d.config.font_weight,
         escape_line(&d.config.density),
         accent,
         d.config.font_scale,
@@ -2089,7 +2096,15 @@ fn replace_config_scalar(l: &mut Vec<String>, key: &str, value: &str) -> Result<
             return Ok(());
         }
     }
-    l.insert(end, format!("{key}: {rendered}"));
+    let insert_at = if key == "font-weight" {
+        l[1..end]
+            .iter()
+            .position(|line| line.starts_with("font:"))
+            .map_or(end, |index| index + 2)
+    } else {
+        end
+    };
+    l.insert(insert_at, format!("{key}: {rendered}"));
     Ok(())
 }
 #[allow(clippy::result_large_err)]
@@ -2098,6 +2113,7 @@ fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
     if let Some(field) = p.strip_prefix("config.") {
         let key = match field {
             "accent" => "accent",
+            "font_weight" => "font-weight",
             "font_scale" => "font-scale",
             "frame_inset" => "frame-inset",
             _ => "",

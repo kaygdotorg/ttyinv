@@ -146,6 +146,8 @@ pub struct Config {
     pub theme: String,
     #[serde(default = "default_font")]
     pub font: String,
+    #[serde(default)]
+    pub font_weight: FontWeight,
     #[serde(default = "default_density")]
     pub density: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,6 +156,21 @@ pub struct Config {
     pub font_scale: FontScale,
     #[serde(default)]
     pub frame_inset: FrameInset,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FontWeight {
+    #[default]
+    Regular,
+    Semibold,
+}
+impl fmt::Display for FontWeight {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Regular => f.write_str("regular"),
+            Self::Semibold => f.write_str("semibold"),
+        }
+    }
 }
 pub(crate) fn default_format() -> String {
     "code-comma-dot".into()
