@@ -3196,7 +3196,7 @@ fn render_table_primitives_impl(
     *y += header_lines as f32 * line + pad_bottom;
     push_rule(page, x, *y, width, r.tokens.rule);
     *y += pad_top;
-    for (_row_index, row) in rows.iter().enumerate() {
+    for row in rows {
         if row
             .cells
             .first()
