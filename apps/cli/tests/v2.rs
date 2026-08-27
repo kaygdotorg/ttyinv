@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use ttyinv_core::MAX_SOURCE_BYTES;
 
 const SOURCE: &str = include_str!("../../../examples/simple.md");
 const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdacd\xf8\x0f\x00\x01\x05\x01\x01'\x18\xe3f\x00\x00\x00\x00IEND\xaeB`\x82";
@@ -914,5 +915,24 @@ fn execute_reports_malformed_and_unknown_envelopes() {
         "unknown command field: unknown"
     );
     assert_eq!(unknown["code"], "invalid_request");
+    let _ = fs::remove_file(root);
+}
+#[test]
+fn execute_reports_core_source_size_limit_diagnostic() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-envelope-oversized-{}",
+        std::process::id()
+    ));
+    let source = "x".repeat(MAX_SOURCE_BYTES + 1);
+    let envelope = format!(r#"{{"kind":"validate","source":{{"markdown":{source:?}}}}}"#);
+    fs::write(&root, envelope).unwrap();
+    let output = run(&["execute", "--input", root.to_str().unwrap()]);
+    assert!(!output.status.success());
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["code"], "limit");
+    assert_eq!(
+        error["diagnostics"][0]["message"],
+        "source exceeds source size limit"
+    );
     let _ = fs::remove_file(root);
 }

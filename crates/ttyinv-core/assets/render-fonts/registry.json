@@ -145,7 +145,7 @@
         "file": "jetbrains-semibold.ttf",
         "sha256": "12d4b18fe6e1af528e4bea69cb0997aeff22f9e52fccffcf66342dd88aa32ab8",
         "source": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/02bb50b082dad9ef8a0f33ac393839202b760223/fonts/ttf/JetBrainsMono-SemiBold.ttf",
-        "weight": 472,
+        "weight": 600,
         "family": "JetBrains Mono SemiBold",
         "postscript": "JetBrainsMono-SemiBold",
         "name": "JetBrains Mono SemiBold"

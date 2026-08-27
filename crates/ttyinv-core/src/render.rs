@@ -1213,6 +1213,7 @@ struct Plan {
     currency: String,
     semantic: PreparedSemantic,
     money_format: String,
+    warnings: Vec<RenderWarning>,
 }
 #[derive(Clone)]
 struct Node {
@@ -1499,7 +1500,7 @@ pub(crate) fn prepare_render(
 ) -> Result<PreparedRender, RenderError> {
     let requested_png_scale = options.png_scale.unwrap_or(1);
     let mut plan = layout(doc, resolve(&doc.config, options)?)?;
-    let mut warnings = Vec::new();
+    let mut warnings = std::mem::take(&mut plan.warnings);
     if plan.resolved.format == RenderFormat::Png && requested_png_scale == 2 {
         let page_pixels =
             PAGE_WIDTH as usize * PAGE_HEIGHT as usize * usize::from(requested_png_scale).pow(2);
@@ -1858,6 +1859,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
         currency: plan.currency.clone(),
         semantic: plan.semantic.clone(),
         money_format: plan.money_format.clone(),
+        warnings: plan.warnings.clone(),
     })
 }
 fn dash_name(value: Dash) -> &'static str {
@@ -2270,6 +2272,7 @@ fn is_footer_block(block: &Block) -> bool {
 }
 fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
     let mut blocks = Vec::new();
+    let mut warnings = Vec::new();
     let mut image_budget = 0usize;
     blocks.push(Block::Title);
     if let Some(image) = party_block(
@@ -2278,6 +2281,7 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         &mut blocks,
         &resolved.assets,
         &mut image_budget,
+        &mut warnings,
     )? {
         blocks.push(Block::OwnedImage {
             image,
@@ -2290,6 +2294,7 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         &mut blocks,
         &resolved.assets,
         &mut image_budget,
+        &mut warnings,
     )? {
         blocks.push(Block::OwnedImage {
             image,
@@ -2303,6 +2308,7 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
             &mut blocks,
             &resolved.assets,
             &mut image_budget,
+            &mut warnings,
         )?;
     }
     if doc
@@ -2333,6 +2339,9 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         }
         let (image, image_alt) = if let Some(asset) = &sig.image {
             let mut decoded = decode_asset(asset, &resolved.assets, &mut image_budget)?;
+            if decoded.is_none() {
+                push_asset_warning(&mut warnings, asset);
+            }
             if let Some(image) = decoded.as_mut() {
                 let scale = (resolved.geometry.sig_img_max_w / image.display_width)
                     .min(resolved.geometry.sig_img_max_h / image.display_height)
@@ -2617,14 +2626,19 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         currency: doc.metadata.currency.clone(),
         semantic: PreparedSemantic::from_document(doc),
         money_format: doc.config.format.clone(),
+        warnings,
     })
 }
 fn baseline_on_rule(r: &Resolved, y: f32, size: f32) -> f32 {
     y + size * (r.ascender - r.descender) / (2.0 * r.upem)
 }
 
+fn html_baseline_offset(r: &Resolved, size: f32, line: f32) -> f32 {
+    (line - size * (r.ascender + r.descender) / r.upem) / 2.0 + size * r.ascender / r.upem
+}
+
 fn baseline_from_top(r: &Resolved, top: f32, size: f32, line: f32) -> f32 {
-    top + (line - size * (r.ascender + r.descender) / r.upem) / 2.0 + size * r.ascender / r.upem
+    top + html_baseline_offset(r, size, line)
 }
 
 fn text_spans(text: &str, kind: InlineKind, color: [u8; 3], face: Face) -> Vec<Span> {
@@ -2903,6 +2917,66 @@ fn push_wrapped_text_impl(
         }
     }
     rows.len()
+}
+fn push_contact_links(
+    page: &mut DisplayPage,
+    r: &Resolved,
+    contact: &str,
+    email: Option<&str>,
+    website: Option<&str>,
+    placement: TextPlacement,
+) {
+    let rows = wrap_runs(
+        r,
+        &[InlineRun {
+            kind: InlineKind::Text,
+            text: contact.to_owned(),
+        }],
+        placement.width,
+        placement.size,
+    );
+    let chars: Vec<char> = contact.chars().collect();
+    let email_end = email.map_or(0, |value| value.chars().count());
+    let website_start = email_end + usize::from(email.is_some()) * 3;
+    let links = [
+        email.map(|value| (0, email_end, safe_mailto(value), value)),
+        website.map(|value| {
+            (
+                website_start,
+                website_start + value.chars().count(),
+                safe_http_url(value),
+                value,
+            )
+        }),
+    ];
+    let mut source_start = 0usize;
+    for (row_index, row) in rows.iter().enumerate() {
+        while source_start < chars.len() && chars[source_start].is_whitespace() {
+            source_start += 1;
+        }
+        let row_len: usize = row.iter().map(|run| run.text.chars().count()).sum();
+        let row_end = (source_start + row_len).min(chars.len());
+        for (start, end, href, label) in links.iter().flatten() {
+            let overlap_start = (*start).max(source_start);
+            let overlap_end = (*end).min(row_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+            let prefix: String = chars[source_start..overlap_start].iter().collect();
+            let visible: String = chars[overlap_start..overlap_end].iter().collect();
+            if let Some(href) = href {
+                page.links.push(LinkBox {
+                    href: href.clone(),
+                    label: (*label).to_owned(),
+                    x: placement.x + measure_text(&prefix, r, placement.size, false),
+                    y: placement.y + row_index as f32 * placement.line,
+                    width: measure_text(&visible, r, placement.size, false),
+                    height: placement.line,
+                });
+            }
+        }
+        source_start = row_end;
+    }
 }
 
 fn push_rule(page: &mut DisplayPage, x: f32, y: f32, w: f32, color: [u8; 3]) {
@@ -3379,37 +3453,28 @@ fn build_positioned(
                 let mut contact = String::new();
                 if let Some(email) = &party.email {
                     contact.push_str(email);
-                    page.links.push(LinkBox {
-                        href: format!("mailto:{email}"),
-                        label: email.clone(),
-                        x: px,
-                        y: py,
-                        width: measure_text(email, r, body, false),
-                        height: r.line_advance,
-                    });
                 }
                 if let Some(website) = &party.website {
-                    let prefix_len = contact.len();
                     if !contact.is_empty() {
                         contact.push_str(" · ");
                     }
                     contact.push_str(website);
-                    if let Some(href) = safe_http_url(website) {
-                        let offset = measure_text(&contact[..prefix_len], r, body, false)
-                            + if prefix_len > 0 {
-                                measure_text(" · ", r, body, false)
-                            } else {
-                                0.0
-                            };
-                        page.links.push(LinkBox {
-                            href,
-                            label: website.clone(),
-                            x: px + offset,
+                }
+                if !contact.is_empty() {
+                    push_contact_links(
+                        &mut page,
+                        r,
+                        &contact,
+                        party.email.as_deref(),
+                        party.website.as_deref(),
+                        TextPlacement {
+                            x: px,
                             y: py,
-                            width: measure_text(website, r, body, false),
-                            height: r.line_advance,
-                        });
-                    }
+                            width: party_width,
+                            size: body,
+                            line: r.line_advance,
+                        },
+                    );
                 }
                 if !contact.is_empty() {
                     let _ = push_wrapped_text!(
@@ -3970,12 +4035,19 @@ fn expand_text_rows(rows: Vec<TextRow>, r: &Resolved) -> Result<Vec<TextRow>, Re
     }
     Ok(out)
 }
+fn push_asset_warning(warnings: &mut Vec<RenderWarning>, image: &crate::Image) {
+    warnings.push(RenderWarning {
+        code: "ASSET_UNRESOLVED".into(),
+        message: format!("asset reference could not be resolved: {}", image.src),
+    });
+}
 fn party_block(
     label: &str,
     p: &crate::Party,
     blocks: &mut Vec<Block>,
     assets: &[ResolvedAsset],
     image_budget: &mut usize,
+    warnings: &mut Vec<RenderWarning>,
 ) -> Result<Option<ImageItem>, RenderError> {
     let mut rows = vec![TextRow {
         text: p.name.clone(),
@@ -4010,6 +4082,7 @@ fn party_block(
         if let Some(image) = decode_asset(i, assets, image_budget)? {
             Some(image)
         } else {
+            push_asset_warning(warnings, i);
             rows.push(TextRow {
                 text: format!("[ img ] {}", i.alt),
                 runs: Vec::new(),
@@ -4033,6 +4106,7 @@ fn section_block(
     blocks: &mut Vec<Block>,
     assets: &[ResolvedAsset],
     image_budget: &mut usize,
+    warnings: &mut Vec<RenderWarning>,
 ) -> Result<(), RenderError> {
     if s.directives.page_break_before {
         blocks.push(Block::PageBreak);
@@ -4065,7 +4139,7 @@ fn section_block(
             ));
         }
     }
-    let _ = (assets, image_budget);
+    let _ = (assets, image_budget, warnings);
     Ok(())
 }
 fn gap_value(g: crate::Gap) -> u8 {
@@ -4519,12 +4593,6 @@ fn decode_asset(
         display_height: h as f32 * scale,
     }))
 }
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
 fn b64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut o = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -4547,18 +4615,21 @@ fn b64(data: &[u8]) -> String {
     }
     o
 }
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
 fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
     let r = &plan.resolved;
     let semantic = &plan.semantic;
-    let baseline_offset = |size: f32, line: f32| {
-        (line - size * (r.ascender + r.descender) / r.upem) / 2.0 + size * r.ascender / r.upem
-    };
     let mut o = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; object-src 'none'; script-src 'none'\"><style>\
 @font-face{{font-family:'ttyinv';font-weight:{};src:url(data:font/ttf;base64,{}) format('truetype')}}\
 @font-face{{font-family:'ttyinv';font-weight:{};src:url(data:font/ttf;base64,{}) format('truetype')}}\
 *{{box-sizing:border-box}}html,body{{margin:0;background:{}}}.page{{position:relative;width:{}px;height:{}px;margin:16px auto;background:{};overflow:hidden;font-family:'ttyinv',monospace;font-size:{}px;font-weight:{};font-variant-numeric:tabular-nums;font-variant-ligatures:none}}\
-.primitive{{position:absolute;white-space:pre;line-height:1}}.rule{{background:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px);height:1px}}.stroke{{border:0!important}}.invoice-frame{{pointer-events:none;background:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px) top/100% 1px no-repeat,repeating-linear-gradient(180deg,currentColor 0 3px,transparent 3px 6px) right/1px 100% no-repeat,repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px) bottom/100% 1px no-repeat,repeating-linear-gradient(180deg,currentColor 0 3px,transparent 3px 6px) left/1px 100% no-repeat}}\
+.primitive{{position:absolute;white-space:pre;line-height:{}px}}.link-overlay{{position:absolute;display:block;color:transparent;text-decoration:none;z-index:2}}.rule{{background:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px);height:1px}}.stroke{{border:0!important}}.invoice-frame{{pointer-events:none;background:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px) top/100% 1px no-repeat,repeating-linear-gradient(180deg,currentColor 0 3px,transparent 3px 6px) right/1px 100% no-repeat,repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 6px) bottom/100% 1px no-repeat,repeating-linear-gradient(180deg,currentColor 0 3px,transparent 3px 6px) left/1px 100% no-repeat}}\
 .semantic-layer{{position:absolute;left:-10000px;top:0;width:1px;overflow:hidden}}\
 @media print{{.page{{break-after:page;margin:0}}}}</style></head><body>",
         r.font_weight_number,
@@ -4570,7 +4641,8 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
         PAGE_HEIGHT,
         color_hex(r.tokens.paper),
         8.26 * f32::from(r.font_scale) / 100.0,
-        r.font_weight_number
+        r.font_weight_number,
+        r.line_advance
     );
     for (page_index, page) in plan.positioned.iter().enumerate() {
         o.push_str(&format!(
@@ -4735,7 +4807,7 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                     "<div class=\"primitive rule\" style=\"left:{x}px;top:{y}px;width:{w}px;color:{}\"></div>",
                     color_hex(*color))),
                 Primitive::Text { x, baseline, size, tracking, spans, .. } => {
-                    let top = *baseline - baseline_offset(*size, r.line_advance);
+                    let top = *baseline - html_baseline_offset(r, *size, r.line_advance);
                     o.push_str(&format!("<div class=\"primitive\" style=\"left:{x}px;top:{top}px;font-size:{size}px;letter-spacing:{tracking}px\">"));
                     for span in spans {
                         let tag = if span.href.is_some() { "a" } else if span.face == Face::Semibold { "strong" } else { "span" };
@@ -4753,6 +4825,19 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                             esc(&image.alt), esc(&image.mime), b64(image.bytes.as_ref())));
                     }
                 }
+            }
+        }
+        for link in &page.links {
+            if let Some(href) = safe_href(&link.href) {
+                o.push_str(&format!(
+                    "<a class=\"link-overlay\" href=\"{}\" aria-label=\"{}\" style=\"left:{}px;top:{}px;width:{}px;height:{}px\"></a>",
+                    esc(&href),
+                    esc(&link.label),
+                    link.x,
+                    link.y,
+                    link.width,
+                    link.height
+                ));
             }
         }
         o.push_str("</article>");
@@ -5938,6 +6023,88 @@ mod tests {
         assert!(html.contains("<th scope=\"col\">Description</th>"));
         assert!(html.contains("<td>8</td>"));
         assert!(html.contains("Fictional Studio"));
+    }
+    #[test]
+    fn html_line_height_preserves_plan_baseline_relationship() {
+        let doc = document(SOURCE).unwrap();
+        let resolved = resolve(&doc.config, RenderOptions::default()).unwrap();
+        let plan = layout(&doc, resolved.clone()).unwrap();
+        let (baseline, size) = plan
+            .positioned
+            .iter()
+            .flat_map(|page| page.items.iter())
+            .find_map(|item| match &item.primitive {
+                Primitive::Text { baseline, size, .. } => Some((*baseline, *size)),
+                _ => None,
+            })
+            .expect("simple fixture has text");
+        let top = baseline - html_baseline_offset(&resolved, size, resolved.line_advance);
+        assert!(
+            (baseline_from_top(&resolved, top, size, resolved.line_advance) - baseline).abs()
+                < f32::EPSILON
+        );
+        let html = String::from_utf8(
+            render(
+                SOURCE,
+                RenderOptions {
+                    format: RenderFormat::Html,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .bytes,
+        )
+        .unwrap();
+        assert!(html.contains(".primitive{position:absolute;white-space:pre;line-height:12.06px}"));
+    }
+
+    #[test]
+    fn html_exposes_visible_contact_links_and_split_rects() {
+        let result = render(
+            SOURCE,
+            RenderOptions {
+                format: RenderFormat::Html,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let html = String::from_utf8(result.bytes).unwrap();
+        assert_eq!(html.matches("class=\"link-overlay\"").count(), 3);
+        assert!(html.contains("href=\"mailto:billing@example.com\""));
+        assert!(html.matches("href=\"https://studio.example\"").count() >= 2);
+
+        let doc = document(SOURCE).unwrap();
+        let plan = layout(
+            &doc,
+            resolve(&doc.config, RenderOptions::default()).unwrap(),
+        )
+        .unwrap();
+        let url_links: Vec<&LinkBox> = plan.positioned[0]
+            .links
+            .iter()
+            .filter(|link| link.href == "https://studio.example")
+            .collect();
+        assert!(url_links.len() >= 2);
+        assert!(url_links.windows(2).any(|links| links[0].y != links[1].y));
+    }
+
+    #[test]
+    fn unresolved_assets_are_reported_as_plan_warnings() {
+        let source = include_str!("../../../render-compat/09-signature-image.md");
+        let result = render(
+            source,
+            RenderOptions {
+                format: RenderFormat::Html,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(result.warnings.iter().any(|warning| {
+            warning.code == "ASSET_UNRESOLVED"
+                && warning
+                    .message
+                    .contains("https://assets.example/signature.svg")
+        }));
     }
     #[test]
     fn prepared_render_round_trip_preserves_digest() {

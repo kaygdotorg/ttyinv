@@ -141,19 +141,23 @@ fn string(
         .dyn_ref::<js_sys::JsString>()
         .ok_or_else(|| invalid_request(format!("{label} must be a string")))?;
     if js_string.length() as usize > limit {
-        return Err(preflight_error(
-            CommandErrorCode::Limit,
-            format!("{label} exceeds adapter size limit ({limit} UTF-16 code units)"),
-        ));
+        let message = if label == "source" {
+            "source exceeds source size limit".to_owned()
+        } else {
+            format!("{label} exceeds adapter size limit ({limit} UTF-16 code units)")
+        };
+        return Err(preflight_error(CommandErrorCode::Limit, message));
     }
     let value = value
         .as_string()
         .ok_or_else(|| invalid_request(format!("{label} is not a valid string")))?;
     if value.len() > limit {
-        return Err(preflight_error(
-            CommandErrorCode::Limit,
-            format!("{label} exceeds adapter size limit ({limit} bytes)"),
-        ));
+        let message = if label == "source" {
+            "source exceeds source size limit".to_owned()
+        } else {
+            format!("{label} exceeds adapter size limit ({limit} bytes)")
+        };
+        return Err(preflight_error(CommandErrorCode::Limit, message));
     }
     budget.charge(value.len())?;
     Ok(JsValue::from_str(&value))
@@ -665,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_strings_fail_at_adapter_boundary() {
+    fn oversized_source_matches_core_limit_diagnostic() {
         let command = js_sys::Object::new();
         let source = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -681,6 +685,11 @@ mod tests {
         )
         .unwrap();
         js_sys::Reflect::set(&command, &JsValue::from_str("source"), &source).unwrap();
-        assert_eq!(code(execute(command.into()).unwrap_err()), "limit");
+        let error = execute(command.into()).unwrap_err();
+        assert_eq!(code(error.clone()), "limit");
+        assert_eq!(
+            diagnostic_message(&error),
+            "source exceeds source size limit"
+        );
     }
 }

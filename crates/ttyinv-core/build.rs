@@ -69,6 +69,17 @@ fn main() {
             "font {} license is required",
             font.id
         );
+        assert!(
+            (300..=800).contains(&font.regular.weight),
+            "font {} regular slot has invalid weight",
+            font.id
+        );
+        assert!(
+            (300..=800).contains(&font.semibold.weight)
+                && font.semibold.weight > font.regular.weight,
+            "font {} semibold slot must be heavier than regular and within 300..=800",
+            font.id
+        );
         for slot in [&font.regular, &font.semibold] {
             assert!(!slot.slot.is_empty(), "font {} slot is required", font.id);
             assert!(
