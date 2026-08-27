@@ -909,6 +909,10 @@ fn execute_reports_malformed_and_unknown_envelopes() {
     let unknown = run(&["execute", "--input", root.to_str().unwrap()]);
     assert_eq!(unknown.status.code(), Some(2));
     let unknown: serde_json::Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert_eq!(
+        unknown["diagnostics"][0]["message"],
+        "unknown command field: unknown"
+    );
     assert_eq!(unknown["code"], "invalid_request");
     let _ = fs::remove_file(root);
 }

@@ -285,7 +285,7 @@ fn execute_cmd(a: &[String]) -> i32 {
         .keys()
         .find(|field| !allowed.contains(&field.as_str()))
     {
-        let command_error = command_request_error(format!("unknown command field `{field}`"));
+        let command_error = command_request_error(format!("unknown command field: {field}"));
         if !write_command_error(&command_error) {
             return exit::OUTPUT;
         }

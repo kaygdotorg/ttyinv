@@ -880,7 +880,7 @@ pub struct PreparedTableRow {
     pub cells: Vec<String>,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreparedBlock {
     Text {
         title: String,
@@ -944,7 +944,7 @@ pub struct PreparedSpan {
     pub color: [u8; 3],
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreparedPrimitive {
     Rect {
         x: f32,
@@ -1241,7 +1241,7 @@ impl PreparedRender {
                                 y: *y,
                                 w: *w,
                                 h: *h,
-                                dash: format!("{dash:?}"),
+                                dash: dash_name(*dash).into(),
                                 color: *color,
                             },
                             Primitive::Rule {
@@ -1254,7 +1254,7 @@ impl PreparedRender {
                                 x: *x,
                                 y: *y,
                                 w: *w,
-                                dash: format!("{dash:?}"),
+                                dash: dash_name(*dash).into(),
                                 color: *color,
                             },
                             Primitive::VRule {
@@ -1267,7 +1267,7 @@ impl PreparedRender {
                                 x: *x,
                                 y: *y,
                                 h: *h,
-                                dash: format!("{dash:?}"),
+                                dash: dash_name(*dash).into(),
                                 color: *color,
                             },
                             Primitive::Text {
@@ -1282,15 +1282,15 @@ impl PreparedRender {
                                 x: *x,
                                 baseline: *baseline,
                                 size: *size,
-                                align: format!("{align:?}"),
+                                align: align_name(*align).into(),
                                 advance: *advance,
                                 tracking: *tracking,
                                 spans: spans
                                     .iter()
                                     .map(|span| PreparedSpan {
                                         text: span.text.clone(),
-                                        face: format!("{:?}", span.face),
-                                        slant: format!("{:?}", span.slant),
+                                        face: face_name(span.face).into(),
+                                        slant: slant_name(span.slant).into(),
                                         underline: span.underline,
                                         href: span.href.clone(),
                                         color: span.color,
@@ -1762,25 +1762,60 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
         money_format: plan.money_format.clone(),
     })
 }
+fn dash_name(value: Dash) -> &'static str {
+    match value {
+        Dash::Solid => "solid",
+        Dash::Dashed => "dashed",
+    }
+}
+fn face_name(value: Face) -> &'static str {
+    match value {
+        Face::Regular => "regular",
+        Face::Semibold => "semibold",
+    }
+}
+fn slant_name(value: Slant) -> &'static str {
+    match value {
+        Slant::Upright => "upright",
+        Slant::Oblique => "oblique",
+    }
+}
+fn align_name(value: Align) -> &'static str {
+    match value {
+        Align::Left => "left",
+        Align::Center => "center",
+        Align::Right => "right",
+    }
+}
 fn parse_dash(value: &str) -> Result<Dash, RenderError> {
     match value {
-        "Solid" => Ok(Dash::Solid),
-        "Dashed" => Ok(Dash::Dashed),
+        "solid" => Ok(Dash::Solid),
+        "dashed" => Ok(Dash::Dashed),
         _ => Err(RenderError::InvalidOption("invalid prepared dash".into())),
     }
 }
 fn parse_face(value: &str) -> Result<Face, RenderError> {
     match value {
-        "Regular" => Ok(Face::Regular),
-        "Semibold" => Ok(Face::Semibold),
+        "regular" => Ok(Face::Regular),
+        "semibold" => Ok(Face::Semibold),
         _ => Err(RenderError::InvalidOption("invalid prepared face".into())),
     }
 }
 fn parse_slant(value: &str) -> Result<Slant, RenderError> {
     match value {
-        "Upright" => Ok(Slant::Upright),
-        "Oblique" => Ok(Slant::Oblique),
+        "upright" => Ok(Slant::Upright),
+        "oblique" => Ok(Slant::Oblique),
         _ => Err(RenderError::InvalidOption("invalid prepared slant".into())),
+    }
+}
+fn parse_align(value: &str) -> Result<Align, RenderError> {
+    match value {
+        "left" => Ok(Align::Left),
+        "center" => Ok(Align::Center),
+        "right" => Ok(Align::Right),
+        _ => Err(RenderError::InvalidOption(
+            "invalid prepared alignment".into(),
+        )),
     }
 }
 #[cfg(test)]
@@ -1799,16 +1834,6 @@ fn render(source: &str, options: RenderOptions) -> Result<RenderResult, RenderEr
 fn render_document(doc: &Document, options: RenderOptions) -> Result<RenderResult, RenderError> {
     let prepared = prepare_render(doc, options)?;
     render_prepared(&prepared)
-}
-fn parse_align(value: &str) -> Result<Align, RenderError> {
-    match value {
-        "Left" => Ok(Align::Left),
-        "Center" => Ok(Align::Center),
-        "Right" => Ok(Align::Right),
-        _ => Err(RenderError::InvalidOption(
-            "invalid prepared alignment".into(),
-        )),
-    }
 }
 pub(crate) fn render_prepared(plan: &PreparedRender) -> Result<RenderResult, RenderError> {
     let encoded_plan = prepared_encoding(plan)?;
@@ -6079,6 +6104,13 @@ mod tests {
         assert!(!json.contains("\"encoded\""));
         assert!(!json.contains("\"source\""));
         assert!(!json.contains("\"document\""));
+        assert!(json.contains("\"kind\":\"rect\"") || json.contains("\"kind\":\"text\""));
+        assert!(!json.contains("\"kind\":\"Rect\""));
+        assert!(!json.contains("\"dash\":\"Dashed\""));
+        assert!(!json.contains("\"face\":\"Regular\""));
+        assert!(!json.contains("\"slant\":\"Oblique\""));
+        assert!(!json.contains("\"align\":\"Left\""));
+        assert!(json.contains("\"dash\":\"dashed\"") || !json.contains("\"dash\":"));
         assert!(json.contains("\"semantic\""));
         assert!(json.len() < MAX_RENDERED_BYTES);
     }

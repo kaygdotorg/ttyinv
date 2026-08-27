@@ -625,6 +625,7 @@ pub struct RegistrySnapshot {
     pub commands: Vec<CommandDescriptor>,
     pub document_schema: String,
     pub command_schema: String,
+    pub outcome_schema: String,
     pub capabilities: serde_json::Value,
 }
 #[cfg(test)]
@@ -652,7 +653,7 @@ fn descriptors() -> Vec<CommandDescriptor> {
             id: id.into(),
             description: description.into(),
             input_schema: "ttyinv/v2/command".into(),
-            output_schema: "ttyinv/v2/outcome".into(),
+            output_schema: format!("ttyinv/v2/outcome#/$defs/{}", outcome_variant(id)),
             limits: limits.iter().map(|value| (*value).into()).collect(),
             formats: formats.iter().map(|value| (*value).into()).collect(),
             adapters: vec![
@@ -836,9 +837,488 @@ fn command_schema() -> serde_json::Value {
         }
     })
 }
+fn outcome_variant(id: &str) -> &'static str {
+    match id {
+        "create" => "created",
+        "validate" => "validated",
+        "inspect" => "inspected",
+        "convert" => "converted",
+        "edit" => "edited",
+        "prepare_render" => "prepared",
+        "resolve_presentation" => "resolved_presentation",
+        "render" => "rendered",
+        "registry" => "registry",
+        _ => "error",
+    }
+}
+
+fn outcome_schema() -> serde_json::Value {
+    let mut defs = serde_json::Map::new();
+    let object = |required: &[&str], properties: serde_json::Value| {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": required,
+            "properties": properties
+        })
+    };
+    let array = |items: serde_json::Value| serde_json::json!({"type":"array","items":items});
+    let bytes = serde_json::json!({
+        "type":"array", "items":{"type":"integer","minimum":0,"maximum":255},
+        "maxItems": crate::MAX_RENDERED_BYTES
+    });
+    let digest = serde_json::json!({
+        "type":"array", "items":{"type":"integer","minimum":0,"maximum":255},
+        "minItems":32, "maxItems":32
+    });
+    defs.insert(
+        "diagnostic".into(),
+        object(
+            &["severity", "code", "message"],
+            serde_json::json!({
+                "severity":{"enum":["error","warning"]},
+                "code":{"type":"string"},
+                "message":{"type":"string"},
+                "path":{"type":["string","null"]},
+                "field_path":{"type":["string","null"]},
+                "line":{"type":["integer","null"],"minimum":0},
+                "column":{"type":["integer","null"],"minimum":0},
+                "hint":{"type":["string","null"]},
+                "section":{"type":["string","null"]},
+                "section_index":{"type":["integer","null"],"minimum":0},
+                "row":{"type":["integer","null"],"minimum":0},
+                "column_name":{"type":["string","null"]}
+            }),
+        ),
+    );
+    defs.insert("source_position".into(), object(
+        &["line", "column"],
+        serde_json::json!({"line":{"type":"integer","minimum":0},"column":{"type":"integer","minimum":0}}),
+    ));
+    defs.insert("source_span".into(), object(
+        &["start", "end"],
+        serde_json::json!({"start":{"$ref":"#/$defs/source_position"},"end":{"$ref":"#/$defs/source_position"}}),
+    ));
+    defs.insert("error".into(), object(
+        &["code", "diagnostics", "retry"],
+        serde_json::json!({
+            "code":{"enum":["invalid_request","limit","invalid_document","conflict","unsupported","invalid_asset","encoding","font","backend"]},
+            "diagnostics":{"$ref":"#/$defs/diagnostics"},
+            "retry":{"enum":["never","after_input_change","later"]}
+        }),
+    ));
+    defs.insert(
+        "diagnostics".into(),
+        array(serde_json::json!({"$ref":"#/$defs/diagnostic"})),
+    );
+    defs.insert(
+        "image".into(),
+        object(
+            &["alt", "src"],
+            serde_json::json!({"alt":{"type":"string"},"src":{"type":"string"}}),
+        ),
+    );
+    defs.insert(
+        "identifier".into(),
+        object(
+            &["key", "value"],
+            serde_json::json!({"key":{"type":"string"},"value":{"type":"string"}}),
+        ),
+    );
+    defs.insert(
+        "party".into(),
+        object(
+            &["name"],
+            serde_json::json!({
+                "name":{"type":"string"},"address":{"type":"array","items":{"type":"string"}},
+                "email":{"type":["string","null"]},"website":{"type":["string","null"]},
+                "identifiers":{"type":"array","items":{"$ref":"#/$defs/identifier"}},
+                "logo":{"anyOf":[{"$ref":"#/$defs/image"},{"type":"null"}]}
+            }),
+        ),
+    );
+    defs.insert(
+        "date".into(),
+        serde_json::json!({"type":"string","pattern":"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}),
+    );
+    defs.insert(
+        "money".into(),
+        object(
+            &["amount", "currency"],
+            serde_json::json!({"amount":{"type":["string","number"]},"currency":{"type":"string"}}),
+        ),
+    );
+    defs.insert("settlement".into(), object(
+        &["date", "paid", "received"],
+        serde_json::json!({
+            "date":{"$ref":"#/$defs/date"},"paid":{"$ref":"#/$defs/money"},"received":{"$ref":"#/$defs/money"}
+        }),
+    ));
+    defs.insert(
+        "label_value".into(),
+        object(
+            &["label", "value"],
+            serde_json::json!({"label":{"type":"string"},"value":{"type":"string"}}),
+        ),
+    );
+    defs.insert("payment_method".into(), object(
+        &["title", "fields"],
+        serde_json::json!({"title":{"type":"string"},"fields":{"type":"array","items":{"$ref":"#/$defs/label_value"}}}),
+    ));
+    defs.insert("payment".into(), object(
+        &["methods"],
+        serde_json::json!({"methods":{"type":"array","items":{"$ref":"#/$defs/payment_method"}}}),
+    ));
+    defs.insert(
+        "signature".into(),
+        object(
+            &["name", "label"],
+            serde_json::json!({
+                "image":{"anyOf":[{"$ref":"#/$defs/image"},{"type":"null"}]},
+                "name":{"type":"string"},"label":{"type":"string"}
+            }),
+        ),
+    );
+    defs.insert(
+        "table".into(),
+        object(
+            &["headings", "alignments", "rows"],
+            serde_json::json!({
+                "headings":{"type":"array","items":{"type":"string"}},
+                "alignments":{"type":"array","items":{"enum":["none","left","center","right"]}},
+                "rows":{"type":"array","items":{"type":"array","items":{"type":"string"}}}
+            }),
+        ),
+    );
+    defs.insert(
+        "directives".into(),
+        object(
+            &["gap", "page_break_before", "summary_only"],
+            serde_json::json!({
+                "gap":{"enum":["none","tight","standard","roomy"]},
+                "page_break_before":{"type":"boolean"},"summary_only":{"type":"boolean"}
+            }),
+        ),
+    );
+    defs.insert("section_body".into(), serde_json::json!({
+        "oneOf":[
+            {"type":"string"},
+            {"type":"object","additionalProperties":false,"required":["kind","value"],
+             "properties":{"kind":{"enum":["table","prose"]},"value":{"oneOf":[{"$ref":"#/$defs/table"},{"type":"string"}]}}}
+        ]
+    }));
+    defs.insert(
+        "section".into(),
+        object(
+            &["title", "body", "directives"],
+            serde_json::json!({
+                "title":{"type":"string"},"body":{"$ref":"#/$defs/section_body"},
+                "directives":{"$ref":"#/$defs/directives"},
+                "total":{"type":["string","number","null"]}
+            }),
+        ),
+    );
+    defs.insert("config".into(), object(
+        &["schema", "format", "theme", "font", "font_weight", "density", "font_scale", "frame_inset"],
+        serde_json::json!({
+            "schema":{"type":"string"},"format":{"type":"string"},"theme":{"type":"string"},
+            "font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"density":{"type":"string"},
+            "accent":{"anyOf":[{"type":"string"},{"type":"null"}]},
+            "font_scale":{"type":"integer","minimum":100,"maximum":140},
+            "frame_inset":{"type":"integer","minimum":30,"maximum":60}
+        }),
+    ));
+    defs.insert("metadata".into(), object(
+        &["number", "kind", "issued", "currency"],
+        serde_json::json!({
+            "number":{"type":"string"},"kind":{"type":"string"},"issued":{"$ref":"#/$defs/date"},
+            "due":{"anyOf":[{"$ref":"#/$defs/date"},{"type":"null"}]},
+            "terms":{"type":["string","null"]},"currency":{"type":"string"}
+        }),
+    ));
+    defs.insert("document".into(), object(
+        &["config", "title", "metadata", "from", "bill_to", "ordinary_sections",
+         "settlements_page_break_before", "payment_page_break_before",
+         "signature_page_break_before", "grand_total"],
+        serde_json::json!({
+            "config":{"$ref":"#/$defs/config"},"title":{"type":"string"},"metadata":{"$ref":"#/$defs/metadata"},
+            "from":{"$ref":"#/$defs/party"},"bill_to":{"$ref":"#/$defs/party"},
+            "ordinary_sections":{"type":"array","items":{"$ref":"#/$defs/section"}},
+            "settlements":{"anyOf":[{"$ref":"#/$defs/table"},{"type":"null"}]},
+            "settlements_page_break_before":{"type":"boolean"},
+            "payment":{"anyOf":[{"$ref":"#/$defs/payment"},{"type":"null"}]},
+            "payment_page_break_before":{"type":"boolean"},
+            "signature":{"anyOf":[{"$ref":"#/$defs/signature"},{"type":"null"}]},
+            "signature_page_break_before":{"type":"boolean"},
+            "grand_total":{"type":["string","number"]}
+        }),
+    ));
+    defs.insert("safe_section".into(), object(
+        &["index", "title", "body", "gap", "page_break_before", "summary_only"],
+        serde_json::json!({
+            "index":{"type":"integer","minimum":0},"title":{"type":"string"},"body":{"type":"string"},
+            "gap":{"enum":["none","tight","standard","roomy"]},
+            "page_break_before":{"type":"boolean"},"summary_only":{"type":"boolean"}
+        }),
+    ));
+    defs.insert(
+        "safe_structure".into(),
+        object(
+            &["fixed_blocks", "sections"],
+            serde_json::json!({
+                "fixed_blocks":{"type":"array","items":{"type":"string"}},
+                "sections":{"type":"array","items":{"$ref":"#/$defs/safe_section"}}
+            }),
+        ),
+    );
+    defs.insert("safe_summary".into(), object(
+        &["schema", "section_count", "table_count", "row_count", "has_settlements",
+         "has_payment", "has_signature", "currency", "grand_total"],
+        serde_json::json!({
+            "schema":{"type":"string"},"section_count":{"type":"integer","minimum":0},
+            "table_count":{"type":"integer","minimum":0},"row_count":{"type":"integer","minimum":0},
+            "has_settlements":{"type":"boolean"},"has_payment":{"type":"boolean"},
+            "has_signature":{"type":"boolean"},"currency":{"type":"string"},
+            "grand_total":{"type":["string","number"]}
+        }),
+    ));
+    defs.insert(
+        "safe_manifest".into(),
+        object(
+            &["fixed_blocks", "sections"],
+            serde_json::json!({
+                "fixed_blocks":{"type":"array","items":{"type":"string"}},
+                "sections":{"type":"array","items":{"$ref":"#/$defs/safe_section"}}
+            }),
+        ),
+    );
+    defs.insert("theme_tokens".into(), object(
+        &["paper", "ink", "muted", "rule", "accent", "canvas"],
+        serde_json::json!({
+            "paper":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "ink":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "muted":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "rule":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "accent":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "canvas":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}
+        }),
+    ));
+    defs.insert(
+        "prepared_text_row".into(),
+        object(&["text"], serde_json::json!({"text":{"type":"string"}})),
+    );
+    defs.insert(
+        "prepared_table_row".into(),
+        object(
+            &["cells"],
+            serde_json::json!({"cells":{"type":"array","items":{"type":"string"}}}),
+        ),
+    );
+    defs.insert("prepared_block".into(), serde_json::json!({
+        "oneOf":[
+            {"type":"object","additionalProperties":false,"required":["kind","title","rows","gap"],"properties":{"kind":{"const":"text"},"title":{"type":"string"},"rows":{"type":"array","items":{"$ref":"#/$defs/prepared_text_row"}},"gap":{"type":"integer","minimum":0}}},
+            {"type":"object","additionalProperties":false,"required":["kind","title","headings","rows","gap"],"properties":{"kind":{"const":"table"},"title":{"type":"string"},"headings":{"type":"array","items":{"type":"string"}},"rows":{"type":"array","items":{"$ref":"#/$defs/prepared_table_row"}},"gap":{"type":"integer","minimum":0}}},
+            {"type":"object","additionalProperties":false,"required":["kind","image","owner"],"properties":{"kind":{"const":"owned_image"},"image":{"type":"integer","minimum":0},"owner":{"type":"string"}}},
+            {"type":"object","additionalProperties":false,"required":["kind","methods","gap"],"properties":{"kind":{"const":"payment"},"methods":{"type":"array","items":{"$ref":"#/$defs/payment_method"}},"gap":{"type":"integer","minimum":0}}},
+            {"type":"object","additionalProperties":false,"required":["kind","name","label","image","image_alt","gap"],"properties":{"kind":{"const":"signature"},"name":{"type":"string"},"label":{"type":"string"},"image":{"type":["integer","null"],"minimum":0},"image_alt":{"type":["string","null"]},"gap":{"type":"integer","minimum":0}}},
+            {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"total"}}}
+        ]
+    }));
+    defs.insert("prepared_span".into(), object(
+        &["text", "face", "slant", "underline", "href", "color"],
+        serde_json::json!({
+            "text":{"type":"string"},"face":{"enum":["regular","semibold"]},"slant":{"enum":["upright","oblique"]},
+            "underline":{"type":"boolean"},"href":{"type":["string","null"]},
+            "color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}
+        }),
+    ));
+    defs.insert("prepared_primitive".into(), serde_json::json!({
+        "oneOf":[
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","fill"],"properties":{"kind":{"const":"rect"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number","minimum":0},"h":{"type":"number","minimum":0},"fill":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","dash","color"],"properties":{"kind":{"const":"stroke"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number"},"h":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","dash","color"],"properties":{"kind":{"const":"rule"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","h","dash","color"],"properties":{"kind":{"const":"v_rule"},"x":{"type":"number"},"y":{"type":"number"},"h":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","baseline","size","align","advance","tracking","spans"],"properties":{"kind":{"const":"text"},"x":{"type":"number"},"baseline":{"type":"number"},"size":{"type":"number","minimum":0},"align":{"enum":["left","center","right"]},"advance":{"type":"number"},"tracking":{"type":"number"},"spans":{"type":"array","items":{"$ref":"#/$defs/prepared_span"}}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","index"],"properties":{"kind":{"const":"image"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number","minimum":0},"h":{"type":"number","minimum":0},"index":{"type":"integer","minimum":0}}}
+        ]
+    }));
+    defs.insert("prepared_item".into(), object(
+        &["node", "primitive"],
+        serde_json::json!({"node":{"type":"integer","minimum":0},"primitive":{"$ref":"#/$defs/prepared_primitive"}}),
+    ));
+    defs.insert("prepared_link".into(), object(
+        &["href", "label", "x", "y", "width", "height"],
+        serde_json::json!({"href":{"type":"string"},"label":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number","minimum":0},"height":{"type":"number","minimum":0}}),
+    ));
+    defs.insert("prepared_image".into(), object(
+        &["alt", "mime", "bytes", "width", "height", "display_width", "display_height"],
+        serde_json::json!({"alt":{"type":"string"},"mime":{"type":"string"},"bytes":bytes,"width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"display_width":{"type":"number","minimum":0},"display_height":{"type":"number","minimum":0}}),
+    ));
+    defs.insert("prepared_page".into(), object(
+        &["items", "links", "blocks"],
+        serde_json::json!({"items":{"type":"array","items":{"$ref":"#/$defs/prepared_item"}},"links":{"type":"array","items":{"$ref":"#/$defs/prepared_link"}},"blocks":{"type":"array","items":{"$ref":"#/$defs/prepared_block"}}}),
+    ));
+    defs.insert(
+        "prepared_node".into(),
+        object(
+            &["role", "label"],
+            serde_json::json!({"role":{"type":"string"},"label":{"type":"string"}}),
+        ),
+    );
+    defs.insert("prepared_party".into(), object(
+        &["name", "address", "email", "website", "identifiers", "logo_alt"],
+        serde_json::json!({"name":{"type":"string"},"address":{"type":"array","items":{"type":"string"}},"email":{"type":["string","null"]},"website":{"type":["string","null"]},"identifiers":{"type":"array","items":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"logo_alt":{"type":["string","null"]}}),
+    ));
+    defs.insert("prepared_semantic".into(), object(
+        &["title", "number", "kind", "issued", "due", "terms", "currency", "from", "bill_to"],
+        serde_json::json!({"title":{"type":"string"},"number":{"type":"string"},"kind":{"type":"string"},"issued":{"type":"string"},"due":{"type":["string","null"]},"terms":{"type":["string","null"]},"currency":{"type":"string"},"from":{"$ref":"#/$defs/prepared_party"},"bill_to":{"$ref":"#/$defs/prepared_party"}}),
+    ));
+    defs.insert("prepared_render".into(), object(
+        &["version", "format", "pages", "images", "width", "height", "currency", "grand_total", "money_format",
+         "warnings", "source_revision", "plan_digest", "tokens", "accent", "font", "font_weight", "font_scale",
+         "density_space", "png_scale", "line_advance", "upem", "ascender", "descender", "advance", "tree", "semantic"],
+        serde_json::json!({
+            "version":{"type":"integer","minimum":0},"format":{"enum":["html","pdf","png"]},
+            "pages":{"type":"array","items":{"$ref":"#/$defs/prepared_page"}},"images":{"type":"array","items":{"$ref":"#/$defs/prepared_image"}},
+            "width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"currency":{"type":"string"},
+            "grand_total":{"type":["string","number"]},"money_format":{"type":"string"},"warnings":{"type":"array","items":{"$ref":"#/$defs/render_warning"}},
+            "source_revision":{"type":"string"},"plan_digest":digest,"tokens":{"$ref":"#/$defs/theme_tokens"},
+            "accent":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
+            "font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"font_scale":{"type":"integer","minimum":100,"maximum":140},
+            "density_space":{"type":"number","minimum":0},"png_scale":{"type":"integer","minimum":1,"maximum":2},
+            "line_advance":{"type":"number","minimum":0},"upem":{"type":"number","minimum":0},"ascender":{"type":"number"},
+            "descender":{"type":"number"},"advance":{"type":"number","minimum":0},"tree":{"type":"array","items":{"$ref":"#/$defs/prepared_node"}},
+            "semantic":{"$ref":"#/$defs/prepared_semantic"}
+        }),
+    ));
+    defs.insert(
+        "render_warning".into(),
+        object(
+            &["code", "message"],
+            serde_json::json!({"code":{"type":"string"},"message":{"type":"string"}}),
+        ),
+    );
+    defs.insert("presentation_tokens".into(), object(
+        &["paper", "ink", "muted", "rule", "accent", "canvas"],
+        serde_json::json!({"paper":{"type":"string"},"ink":{"type":"string"},"muted":{"type":"string"},"rule":{"type":"string"},"accent":{"type":"string"},"canvas":{"type":"string"}}),
+    ));
+    defs.insert("presentation_accent".into(), object(
+        &["authored", "resolved", "corrected", "ratio", "steps"],
+        serde_json::json!({"authored":{"type":["string","null"]},"resolved":{"type":"string"},"corrected":{"type":"boolean"},"ratio":{"type":"number"},"steps":{"type":"integer","minimum":0}}),
+    ));
+    defs.insert("presentation_scale".into(), object(
+        &["type", "density_space", "space", "leading"],
+        serde_json::json!({"type":{"type":"number"},"density_space":{"type":"number"},"space":{"type":"number"},"leading":{"type":"number"}}),
+    ));
+    defs.insert("presentation_content".into(), object(
+        &["left", "right", "top", "bottom"],
+        serde_json::json!({"left":{"type":"number"},"right":{"type":"number"},"top":{"type":"number"},"bottom":{"type":"number"}}),
+    ));
+    defs.insert("presentation_font".into(), object(
+        &["id", "weight", "semibold_weight"],
+        serde_json::json!({"id":{"type":"string"},"weight":{"type":"integer","minimum":0},"semibold_weight":{"type":"integer","minimum":0}}),
+    ));
+    defs.insert("presentation".into(), object(
+        &["tokens", "accent", "font", "scale", "frame_inset", "content", "geometry"],
+        serde_json::json!({
+            "tokens":{"$ref":"#/$defs/presentation_tokens"},"accent":{"$ref":"#/$defs/presentation_accent"},
+            "font":{"$ref":"#/$defs/presentation_font"},"scale":{"$ref":"#/$defs/presentation_scale"},
+            "frame_inset":{"type":"integer","minimum":30,"maximum":60},"content":{"$ref":"#/$defs/presentation_content"},
+            "geometry":{"type":"object","additionalProperties":{"type":"number"}}
+        }),
+    ));
+    defs.insert("presentation_config".into(), object(
+        &["theme", "font", "font_weight", "density", "accent", "font_scale", "frame_inset"],
+        serde_json::json!({"theme":{"type":"string"},"font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"density":{"type":"string"},"accent":{"type":["string","null"]},"font_scale":{"type":"integer","minimum":100,"maximum":140},"frame_inset":{"type":"integer","minimum":30,"maximum":60}}),
+    ));
+    defs.insert("capabilities".into(), serde_json::json!({
+        "type":"object","additionalProperties":false,"required":["version","commands","limits","presentation"],
+        "properties":{
+            "version":{"type":"string"},"commands":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","description","adapters","formats","limits","errors","retry"],"properties":{"id":{"type":"string"},"description":{"type":"string"},"adapters":{"type":"array","items":{"type":"string"}},"formats":{"type":"array","items":{"type":"string"}},"limits":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"enum":["invalid_request","limit","invalid_document","conflict","unsupported","invalid_asset","encoding","font","backend"]}},"retry":{"enum":["never","after_input_change","later"]}}}},
+            "limits":{"type":"object","additionalProperties":false,"required":["max_source_bytes","max_rendered_bytes","max_asset_bytes","max_asset_total_bytes","max_pages","max_png_pixels","max_png_total_pixels"],"properties":{"max_source_bytes":{"type":"integer","minimum":0},"max_rendered_bytes":{"type":"integer","minimum":0},"max_asset_bytes":{"type":"integer","minimum":0},"max_asset_total_bytes":{"type":"integer","minimum":0},"max_pages":{"type":"integer","minimum":0},"max_png_pixels":{"type":"integer","minimum":0},"max_png_total_pixels":{"type":"integer","minimum":0}}},
+            "presentation":{"type":"object","additionalProperties":false,"required":["themes","fonts","densities","font_scale","frame_inset","png_scale"],"properties":{"themes":{"type":"array","items":{"type":"string"}},"fonts":{"type":"array","items":{"type":"object","additionalProperties":true}},"densities":{"type":"array","items":{"type":"string"}},"font_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":100,"maximum":140},"maximum":{"type":"integer","minimum":100,"maximum":140}}},"frame_inset":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":30,"maximum":60},"maximum":{"type":"integer","minimum":30,"maximum":60}}},"png_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":1,"maximum":2},"maximum":{"type":"integer","minimum":1,"maximum":2}}}}}
+        }
+    }));
+    defs.insert("registry_snapshot".into(), object(
+        &["version", "commands", "document_schema", "command_schema", "outcome_schema", "capabilities"],
+        serde_json::json!({"version":{"type":"string"},"commands":{"type":"array","items":{"$ref":"#/$defs/command_descriptor"}},"document_schema":{"type":"string"},"command_schema":{"type":"string"},"outcome_schema":{"type":"string"},"capabilities":{"$ref":"#/$defs/capabilities"}}),
+    ));
+
+    defs.insert("created".into(), object(
+        &["source", "document", "revision"],
+        serde_json::json!({"source":{"type":"string"},"document":{"$ref":"#/$defs/document"},"revision":{"type":"string"}}),
+    ));
+    defs.insert("validated".into(), object(
+        &["revision", "valid", "diagnostics"],
+        serde_json::json!({"revision":{"type":"string"},"valid":{"type":"boolean"},"document":{"anyOf":[{"$ref":"#/$defs/document"},{"type":"null"}]},"diagnostics":{"$ref":"#/$defs/diagnostics"}}),
+    ));
+    defs.insert("inspected".into(), object(
+        &["revision", "valid", "mode", "diagnostics"],
+        serde_json::json!({"revision":{"type":"string"},"valid":{"type":"boolean"},"mode":{"enum":["structure","summary","manifest"]},"structure":{"anyOf":[{"$ref":"#/$defs/safe_structure"},{"type":"null"}]},"summary":{"anyOf":[{"$ref":"#/$defs/safe_summary"},{"type":"null"}]},"manifest":{"anyOf":[{"$ref":"#/$defs/safe_manifest"},{"type":"null"}]},"diagnostics":{"$ref":"#/$defs/diagnostics"}}),
+    ));
+    defs.insert("converted".into(), object(
+        &["format", "source", "document", "revision"],
+        serde_json::json!({"format":{"enum":["markdown","json","yaml"]},"source":{"type":"string"},"document":{"$ref":"#/$defs/document"},"revision":{"type":"string"}}),
+    ));
+    defs.insert("edited".into(), object(
+        &["source", "document", "revision", "diagnostics"],
+        serde_json::json!({"source":{"type":"string"},"document":{"$ref":"#/$defs/document"},"revision":{"type":"string"},"diagnostics":{"$ref":"#/$defs/diagnostics"}}),
+    ));
+    defs.insert(
+        "prepared".into(),
+        object(
+            &["plan"],
+            serde_json::json!({"plan":{"$ref":"#/$defs/prepared_render"}}),
+        ),
+    );
+    defs.insert(
+        "resolved_presentation".into(),
+        object(
+            &["presentation"],
+            serde_json::json!({"presentation":{"$ref":"#/$defs/presentation"}}),
+        ),
+    );
+    defs.insert("rendered".into(), object(
+        &["source_revision", "plan_digest", "bytes", "output_sha256", "mime", "extension", "pages", "width", "height", "warnings"],
+        serde_json::json!({"source_revision":{"type":"string"},"plan_digest":digest,"bytes":bytes,"output_sha256":digest,"mime":{"type":"string"},"extension":{"type":"string"},"pages":{"type":"integer","minimum":0},"width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"warnings":{"type":"array","items":{"$ref":"#/$defs/render_warning"}}}),
+    ));
+    defs.insert("registry".into(), object(
+        &["version", "commands", "document_schema", "command_schema", "outcome_schema", "capabilities"],
+        serde_json::json!({"version":{"type":"string"},"commands":{"type":"array","items":{"$ref":"#/$defs/command_descriptor"}},"document_schema":{"type":"string"},"command_schema":{"type":"string"},"outcome_schema":{"type":"string"},"capabilities":{"$ref":"#/$defs/capabilities"}}),
+    ));
+
+    for descriptor in descriptors() {
+        let variant = outcome_variant(&descriptor.id);
+        let payload = defs.remove(variant).expect("outcome variant schema");
+        defs.insert(
+            variant.into(),
+            object(&[variant], serde_json::json!({variant: payload})),
+        );
+    }
+    let outcome_variants = descriptors()
+        .iter()
+        .map(|descriptor| serde_json::json!({"$ref": format!("#/$defs/{}", outcome_variant(&descriptor.id))}))
+        .collect::<Vec<_>>();
+    let mut schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://ttyinv.com/schema/ttyinv-command-outcome.schema.json",
+        "title": "ttyinv/v2 command outcome",
+        "description": "Typed success and error responses returned by the ttyinv core."
+    });
+    schema["oneOf"] = serde_json::Value::Array(
+        outcome_variants
+            .into_iter()
+            .chain(std::iter::once(serde_json::json!({"$ref":"#/$defs/error"})))
+            .collect(),
+    );
+    schema["$defs"] = serde_json::Value::Object(defs);
+    schema
+}
+
 pub(crate) fn registry() -> RegistrySnapshot {
     let commands = descriptors();
     let command_schema = command_schema();
+    let outcome_schema = outcome_schema();
     let capability_entries: Vec<_> = commands
         .iter()
         .map(|command| {
@@ -875,6 +1355,7 @@ pub(crate) fn registry() -> RegistrySnapshot {
         commands,
         document_schema: include_str!("../schema/ttyinv-v2.schema.json").into(),
         command_schema: serde_json::to_string(&command_schema).expect("command schema"),
+        outcome_schema: serde_json::to_string(&outcome_schema).expect("outcome schema"),
         capabilities,
     }
 }
@@ -1421,6 +1902,30 @@ mod tests {
                 .iter()
                 .any(|entry| entry["id"] == *id));
         }
+        let outcome_schema: serde_json::Value =
+            serde_json::from_str(&first.outcome_schema).expect("outcome schema JSON");
+        assert_eq!(
+            outcome_schema["oneOf"].as_array().map(Vec::len),
+            Some(COMMAND_IDS.len() + 1)
+        );
+        for id in COMMAND_IDS {
+            let variant = outcome_variant(id);
+            assert!(
+                outcome_schema["$defs"][variant].is_object(),
+                "missing outcome variant {variant}"
+            );
+            let descriptor = first
+                .commands
+                .iter()
+                .find(|command| command.id == *id)
+                .expect("descriptor");
+            assert_eq!(
+                descriptor.output_schema,
+                format!("ttyinv/v2/outcome#/$defs/{variant}")
+            );
+        }
+        assert!(outcome_schema["$defs"]["error"].is_object());
+        assert!(outcome_schema["$defs"]["error"]["additionalProperties"] == false);
     }
 
     #[test]

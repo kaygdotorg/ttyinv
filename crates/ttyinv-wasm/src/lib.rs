@@ -500,11 +500,14 @@ pub fn execute(command: JsValue) -> Result<JsValue, JsValue> {
 mod tests {
     use super::*;
 
-    fn code(error: JsValue) -> String {
-        let value = js_sys::Reflect::get(&error, &JsValue::from_str("code")).unwrap();
-        value.as_string().unwrap()
+    fn diagnostic_message(error: &JsValue) -> String {
+        let diagnostics = js_sys::Reflect::get(error, &JsValue::from_str("diagnostics")).unwrap();
+        let first = js_sys::Reflect::get(&diagnostics, &JsValue::from_f64(0.0)).unwrap();
+        js_sys::Reflect::get(&first, &JsValue::from_str("message"))
+            .unwrap()
+            .as_string()
+            .unwrap()
     }
-
     #[test]
     fn registry_crosses_the_single_executor() {
         let command = js_sys::Object::new();
@@ -600,10 +603,9 @@ mod tests {
             &JsValue::from_str("getter"),
         )
         .unwrap();
-        assert_eq!(
-            code(execute(command.into()).unwrap_err()),
-            "invalid_request"
-        );
+        let error = execute(command.into()).unwrap_err();
+        assert_eq!(code(error.clone()), "invalid_request");
+        assert_eq!(diagnostic_message(&error), "unknown command field: evil");
     }
 
     #[test]
