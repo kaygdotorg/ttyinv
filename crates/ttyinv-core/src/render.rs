@@ -2420,12 +2420,13 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
             &mut image_budget,
             &mut warnings,
         )?;
-        if doc.config.amount_in_words && !section.directives.summary_only && section.total.is_some()
-        {
-            blocks.push(Block::AmountInWords {
-                label: format!("{} subtotal in words", section.title),
-                text: crate::amount_in_words(section.total.unwrap(), &doc.metadata.currency),
-            });
+        if doc.config.amount_in_words && !section.directives.summary_only {
+            if let Some(amount) = section.total {
+                blocks.push(Block::AmountInWords {
+                    label: format!("{} subtotal in words", section.title),
+                    text: crate::amount_in_words(amount, &doc.metadata.currency),
+                });
+            }
         }
     }
     if doc

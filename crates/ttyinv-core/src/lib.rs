@@ -1377,11 +1377,11 @@ pub(crate) fn serialize_markdown(d: &Document) -> String {
         .accent
         .as_ref()
         .map_or_else(String::new, |value| format!("accent: \"{value}\"\n"));
-    let amount_in_words = d
-        .config
-        .amount_in_words
-        .then(|| "amount-in-words: true\n")
-        .unwrap_or_default();
+    let amount_in_words = if d.config.amount_in_words {
+        "amount-in-words: true\n"
+    } else {
+        ""
+    };
     let mut s = format!(
         "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\nfont-weight: {}\ndensity: {}\n{}{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
         escape_line(&d.config.schema),
