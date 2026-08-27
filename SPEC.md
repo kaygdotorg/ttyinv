@@ -204,6 +204,10 @@ DTO keys use `font_weight`, `font_scale`, and `frame_inset`; Markdown frontmatte
 to 128 KiB. The WASM decoded request limit is 256 KiB, including operation paths and
 values.
 
+Every outcome `revision` is the lowercase hexadecimal SHA-256 digest of the canonical
+Markdown source. It is independent of the requested input or output representation:
+converting the same document to JSON or YAML does not change its revision.
+
 ```json
 {"source":"...","base_revision":"...","sequence":7,
  "operation":{"kind":"move_section","from":3,"to":1}}
