@@ -20,10 +20,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ttyinv_cli::exit;
 use ttyinv_core::{
-    execute, CanonicalFormat, CommandError, CommandErrorCode, CommandOutcome, Diagnostic, Document,
-    EditOperationInput, FontWeight, InspectMode, InvoiceCommand, InvoiceDraft,
-    PresentationConfigInput, RenderAssetInput, RenderFormat, RenderOptionsInput, RetryClass,
-    Severity, Source, MAX_ASSET_BYTES, MAX_SOURCE_BYTES, PAGE_WIDTH,
+    execute, invalid_command_message, CanonicalFormat, CommandError, CommandErrorCode,
+    CommandOutcome, Diagnostic, Document, EditOperationInput, FontWeight, InspectMode,
+    InvoiceCommand, InvoiceDraft, PresentationConfigInput, RenderAssetInput, RenderFormat,
+    RenderOptionsInput, RetryClass, Severity, Source, MAX_ASSET_BYTES, MAX_SOURCE_BYTES,
+    PAGE_WIDTH,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -294,7 +295,7 @@ fn execute_cmd(a: &[String]) -> i32 {
     let command: InvoiceCommand<'static> = match serde_json::from_value(value) {
         Ok(command) => command,
         Err(error) => {
-            let command_error = command_request_error(format!("invalid command envelope: {error}"));
+            let command_error = command_request_error(invalid_command_message(error));
             if !write_command_error(&command_error) {
                 return exit::OUTPUT;
             }

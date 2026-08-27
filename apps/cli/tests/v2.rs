@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::Write;
 use std::process::Command;
-use ttyinv_core::MAX_SOURCE_BYTES;
+use ttyinv_core::{INVALID_COMMAND_MESSAGE_PREFIX, MAX_SOURCE_BYTES, SOURCE_SIZE_LIMIT_MESSAGE};
 
 const SOURCE: &str = include_str!("../../../examples/simple.md");
 const ONE_PIXEL_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdacd\xf8\x0f\x00\x01\x05\x01\x01'\x18\xe3f\x00\x00\x00\x00IEND\xaeB`\x82";
@@ -918,6 +918,29 @@ fn execute_reports_malformed_and_unknown_envelopes() {
     let _ = fs::remove_file(root);
 }
 #[test]
+fn execute_uses_shared_invalid_command_message_prefix() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-envelope-invalid-option-{}",
+        std::process::id()
+    ));
+    fs::write(
+        &root,
+        r##"{"kind":"render","source":{"markdown":"# title"},"options":{"format":"gif"}}"##,
+    )
+    .unwrap();
+    let output = run(&["execute", "--input", root.to_str().unwrap()]);
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["code"], "invalid_request");
+    assert_eq!(
+        error["diagnostics"][0]["message"],
+        format!(
+            "{INVALID_COMMAND_MESSAGE_PREFIX}unknown variant `gif`, expected one of `html`, `pdf`, `png`"
+        )
+    );
+    assert_eq!(error["retry"], "after_input_change");
+    let _ = fs::remove_file(root);
+}
+#[test]
 fn execute_reports_core_source_size_limit_diagnostic() {
     let root = std::env::temp_dir().join(format!(
         "ttyinv-v2-envelope-oversized-{}",
@@ -932,7 +955,7 @@ fn execute_reports_core_source_size_limit_diagnostic() {
     assert_eq!(error["code"], "limit");
     assert_eq!(
         error["diagnostics"][0]["message"],
-        "source exceeds source size limit"
+        SOURCE_SIZE_LIMIT_MESSAGE
     );
     let _ = fs::remove_file(root);
 }

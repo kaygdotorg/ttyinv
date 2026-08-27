@@ -1403,7 +1403,7 @@ fn decode(source: Source<'_>) -> Result<(Document, String), CommandError> {
         Source::Markdown(x) | Source::Json(x) | Source::Yaml(x) => x.as_ref(),
     };
     if text.len() > crate::MAX_SOURCE_BYTES {
-        return Err(limit("source exceeds source size limit"));
+        return Err(limit(crate::SOURCE_SIZE_LIMIT_MESSAGE));
     }
     let d = match source {
         Source::Markdown(x) => document(x.as_ref()).map_err(|r| {

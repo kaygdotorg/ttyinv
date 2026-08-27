@@ -20,6 +20,16 @@ pub use render::{
 };
 pub const MAX_SOURCE_BYTES: usize = 128 * 1024;
 pub const MAX_EDIT_BYTES: usize = 128 * 1024;
+/// Shared adapter wording for a command envelope that fails typed deserialization.
+pub const INVALID_COMMAND_MESSAGE_PREFIX: &str = "invalid command: ";
+/// Shared core wording for source values beyond the bounded input size.
+pub const SOURCE_SIZE_LIMIT_MESSAGE: &str = "source exceeds source size limit";
+/// Formats typed command deserialization errors consistently across adapters.
+pub fn invalid_command_message(error: impl std::fmt::Display) -> String {
+    let message = error.to_string();
+    let message = message.strip_prefix("Error: ").unwrap_or(&message);
+    format!("{INVALID_COMMAND_MESSAGE_PREFIX}{message}")
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {

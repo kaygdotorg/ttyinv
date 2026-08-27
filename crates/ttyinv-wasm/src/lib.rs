@@ -1,7 +1,7 @@
 use serde::Serialize;
 use ttyinv_core::{
-    execute as execute_core, CommandError, CommandErrorCode, CommandOutcome, Diagnostic,
-    InvoiceCommand, RetryClass,
+    execute as execute_core, invalid_command_message, CommandError, CommandErrorCode,
+    CommandOutcome, Diagnostic, InvoiceCommand, RetryClass, SOURCE_SIZE_LIMIT_MESSAGE,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
@@ -142,7 +142,7 @@ fn string(
         .ok_or_else(|| invalid_request(format!("{label} must be a string")))?;
     if js_string.length() as usize > limit {
         let message = if label == "source" {
-            "source exceeds source size limit".to_owned()
+            SOURCE_SIZE_LIMIT_MESSAGE.to_owned()
         } else {
             format!("{label} exceeds adapter size limit ({limit} UTF-16 code units)")
         };
@@ -153,7 +153,7 @@ fn string(
         .ok_or_else(|| invalid_request(format!("{label} is not a valid string")))?;
     if value.len() > limit {
         let message = if label == "source" {
-            "source exceeds source size limit".to_owned()
+            SOURCE_SIZE_LIMIT_MESSAGE.to_owned()
         } else {
             format!("{label} exceeds adapter size limit ({limit} bytes)")
         };
@@ -495,7 +495,7 @@ fn serialize_outcome(outcome: CommandOutcome) -> Result<JsValue, JsValue> {
 pub fn execute(command: JsValue) -> Result<JsValue, JsValue> {
     let snapshot = snapshot_command(&command)?;
     let command: InvoiceCommand<'static> = serde_wasm_bindgen::from_value(snapshot)
-        .map_err(|error| invalid_request(format!("invalid command: {error}")))?;
+        .map_err(|error| invalid_request(invalid_command_message(error)))?;
     let outcome = execute_core(command).map_err(error_value)?;
     serialize_outcome(outcome)
 }
@@ -613,6 +613,41 @@ mod tests {
     }
 
     #[test]
+    fn invalid_option_uses_shared_invalid_command_message_prefix() {
+        let command = js_sys::Object::new();
+        let options = js_sys::Object::new();
+        let source = js_sys::Object::new();
+        js_sys::Reflect::set(
+            &source,
+            &JsValue::from_str("markdown"),
+            &JsValue::from_str("# title"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &options,
+            &JsValue::from_str("format"),
+            &JsValue::from_str("gif"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &command,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("render"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&command, &JsValue::from_str("source"), &source).unwrap();
+        js_sys::Reflect::set(&command, &JsValue::from_str("options"), &options).unwrap();
+        let error = execute(command.into()).unwrap_err();
+        assert_eq!(code(error.clone()), "invalid_request");
+        assert_eq!(
+            diagnostic_message(&error),
+            format!(
+                "{INVALID_COMMAND_MESSAGE_PREFIX}unknown variant `gif`, expected one of `html`, `pdf`, `png`"
+            )
+        );
+    }
+
+    #[test]
     fn source_requires_one_exact_format() {
         let source = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -687,9 +722,6 @@ mod tests {
         js_sys::Reflect::set(&command, &JsValue::from_str("source"), &source).unwrap();
         let error = execute(command.into()).unwrap_err();
         assert_eq!(code(error.clone()), "limit");
-        assert_eq!(
-            diagnostic_message(&error),
-            "source exceeds source size limit"
-        );
+        assert_eq!(diagnostic_message(&error), SOURCE_SIZE_LIMIT_MESSAGE);
     }
 }
