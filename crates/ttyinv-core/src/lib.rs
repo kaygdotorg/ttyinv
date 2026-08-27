@@ -613,50 +613,16 @@ fn validate_config(c: &Config, e: &mut Vec<Diagnostic>) {
     if c.schema != "ttyinv/v2" {
         e.push(Diagnostic::error("SCHEMA002", "schema must be ttyinv/v2"))
     }
-    if ![
-        "code-comma-dot",
-        "code-dot-comma",
-        "code-space-comma",
-        "code-indian",
-        "code-plain",
-    ]
-    .contains(&c.format.as_str())
-    {
+    if !render::supported_money_formats().contains(&c.format.as_str()) {
         e.push(Diagnostic::error("SCHEMA007", "unsupported format"))
     }
-    if ![
-        "printable",
-        "paper-white",
-        "graphite",
-        "blueprint",
-        "ledger-pad",
-        "solarized-light",
-        "parchment",
-        "midnight",
-        "nord",
-        "gruvbox-dark",
-    ]
-    .contains(&c.theme.as_str())
-    {
+    if !render::supported_themes().contains(&c.theme.as_str()) {
         e.push(Diagnostic::error("SCHEMA007", "unsupported theme"))
     }
-    if ![
-        "geist-mono",
-        "cousine",
-        "fira",
-        "ibm-plex",
-        "inconsolata",
-        "jetbrains",
-        "roboto",
-        "source-code",
-        "space",
-        "ubuntu",
-    ]
-    .contains(&c.font.as_str())
-    {
+    if !render::font_capabilities().any(|font| font.id == c.font) {
         e.push(Diagnostic::error("SCHEMA007", "unsupported font"))
     }
-    if !["comfortable", "compact"].contains(&c.density.as_str()) {
+    if !render::supported_densities().contains(&c.density.as_str()) {
         e.push(Diagnostic::error("SCHEMA007", "unsupported density"))
     }
 }
@@ -1959,13 +1925,26 @@ fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
     let mut l = lines(s);
     if let Some(field) = p.strip_prefix("config.") {
         let key = match field {
-            "accent" => "accent",
+            "format" => "format",
+            "theme" => "theme",
+            "font" => "font",
             "font_weight" => "font-weight",
+            "density" => "density",
+            "accent" => "accent",
             "font_scale" => "font-scale",
             "frame_inset" => "frame-inset",
             _ => "",
         };
         if !key.is_empty() {
+            if v.is_empty() {
+                if key == "accent" {
+                    return remove_config_scalar(&mut l, key).map(|_| finish(s, l));
+                }
+                return Err(Diagnostic::error(
+                    "EDIT004",
+                    "required config field cannot be empty",
+                ));
+            }
             return replace_config_scalar(&mut l, key, v).map(|_| finish(s, l));
         }
     }
@@ -2126,6 +2105,27 @@ fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
         }
     }
     Err(Diagnostic::error("EDIT003", "scalar path is not editable"))
+}
+#[allow(clippy::result_large_err)]
+fn remove_config_scalar(l: &mut Vec<String>, key: &str) -> Result<(), Diagnostic> {
+    let Some(end) = l
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, line)| (line == "---").then_some(index))
+    else {
+        return Err(Diagnostic::error(
+            "EDIT004",
+            "frontmatter configuration is absent",
+        ));
+    };
+    if let Some(index) = l[1..end]
+        .iter()
+        .position(|line| line.starts_with(&format!("{key}:")))
+    {
+        l.remove(index + 1);
+    }
+    Ok(())
 }
 #[allow(clippy::result_large_err)]
 fn replace_label(

@@ -1,6 +1,7 @@
 use crate::render::{
     font_capabilities, prepare_render, presentation, render_prepared, supported_densities,
-    supported_themes, PresentationConfig, RenderAsset, RenderError, RenderOptions,
+    supported_money_formats, supported_themes, PresentationConfig, RenderAsset, RenderError,
+    RenderOptions,
 };
 use crate::{
     apply_edit, document, parse_json, parse_yaml, revision, serialize_markdown, to_json, to_yaml,
@@ -1253,7 +1254,7 @@ fn outcome_schema() -> serde_json::Value {
         "properties":{
             "version":{"type":"string"},"commands":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","description","adapters","formats","limits","errors","retry"],"properties":{"id":{"type":"string"},"description":{"type":"string"},"adapters":{"type":"array","items":{"type":"string"}},"formats":{"type":"array","items":{"type":"string"}},"limits":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"enum":["invalid_request","limit","invalid_document","conflict","unsupported","invalid_asset","encoding","font","backend"]}},"retry":{"enum":["never","after_input_change","later"]}}}},
             "limits":{"type":"object","additionalProperties":false,"required":["max_source_bytes","max_rendered_bytes","max_asset_bytes","max_asset_total_bytes","max_pages","max_png_pixels","max_png_total_pixels"],"properties":{"max_source_bytes":{"type":"integer","minimum":0},"max_rendered_bytes":{"type":"integer","minimum":0},"max_asset_bytes":{"type":"integer","minimum":0},"max_asset_total_bytes":{"type":"integer","minimum":0},"max_pages":{"type":"integer","minimum":0},"max_png_pixels":{"type":"integer","minimum":0},"max_png_total_pixels":{"type":"integer","minimum":0}}},
-            "presentation":{"type":"object","additionalProperties":false,"required":["themes","fonts","densities","font_scale","frame_inset","png_scale"],"properties":{"themes":{"type":"array","items":{"type":"string"}},"fonts":{"type":"array","items":{"type":"object","additionalProperties":true}},"densities":{"type":"array","items":{"type":"string"}},"font_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":100,"maximum":140},"maximum":{"type":"integer","minimum":100,"maximum":140}}},"frame_inset":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":30,"maximum":60},"maximum":{"type":"integer","minimum":30,"maximum":60}}},"png_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":1,"maximum":2},"maximum":{"type":"integer","minimum":1,"maximum":2}}}}}
+            "presentation":{"type":"object","additionalProperties":false,"required":["formats","themes","fonts","densities","font_scale","frame_inset","png_scale"],"properties":{"formats":{"type":"array","items":{"type":"string"}},"themes":{"type":"array","items":{"type":"string"}},"fonts":{"type":"array","items":{"type":"object","additionalProperties":true}},"densities":{"type":"array","items":{"type":"string"}},"font_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":100,"maximum":140},"maximum":{"type":"integer","minimum":100,"maximum":140}}},"frame_inset":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":30,"maximum":60},"maximum":{"type":"integer","minimum":30,"maximum":60}}},"png_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":1,"maximum":2},"maximum":{"type":"integer","minimum":1,"maximum":2}}}}}
         }
     }));
     defs.insert("registry_snapshot".into(), object(
@@ -1359,6 +1360,7 @@ pub(crate) fn registry() -> RegistrySnapshot {
             "max_png_total_pixels": crate::MAX_PNG_TOTAL_PIXELS,
         },
         "presentation": {
+            "formats": supported_money_formats(),
             "themes": supported_themes(),
             "fonts": font_capabilities().collect::<Vec<_>>(),
             "densities": supported_densities(),
@@ -1919,6 +1921,16 @@ mod tests {
                 .iter()
                 .any(|entry| entry["id"] == *id));
         }
+        assert_eq!(
+            first.capabilities["presentation"]["formats"],
+            serde_json::json!([
+                "code-comma-dot",
+                "code-dot-comma",
+                "code-space-comma",
+                "code-indian",
+                "code-plain"
+            ])
+        );
         let outcome_schema: serde_json::Value =
             serde_json::from_str(&first.outcome_schema).expect("outcome schema JSON");
         assert_eq!(

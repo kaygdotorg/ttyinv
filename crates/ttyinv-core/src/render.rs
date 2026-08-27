@@ -344,6 +344,16 @@ const THEMES: &[(&str, ThemeTokens)] = &[
     ),
 ];
 const DENSITIES: &[&str] = &["comfortable", "compact"];
+const MONEY_FORMATS: &[&str] = &[
+    "code-comma-dot",
+    "code-dot-comma",
+    "code-space-comma",
+    "code-indian",
+    "code-plain",
+];
+pub(crate) fn supported_money_formats() -> &'static [&'static str] {
+    MONEY_FORMATS
+}
 pub(crate) fn theme_tokens(id: &str) -> Option<ThemeTokens> {
     THEMES
         .iter()

@@ -219,10 +219,12 @@ based over ordinary sections only. One drop is one operation. A revision mismatc
 `conflict: true` and diagnostic `CONFLICT001`. Limits and decoded request bounds apply.
 
 `SetScalar` changes visible scalar fields without rebuilding unrelated source bytes.
+For `config.*` paths, an empty value removes the optional `config.accent` key so the
+renderer uses the theme accent; empty values for all other configuration keys are
+rejected with `EDIT004`. Unknown configuration values are rejected by validation.
 Metadata paths search only the list between the H1 title and the `From` block.
 `sections[n].prose` requires a prose target and one unstructured, single-paragraph value.
 The value cannot contain blank lines, tables, headings, lists, fences, or directives.
-The edit range ends before the next block's directives.
 `MoveSection` moves the section and all immediately preceding directives. `SetSectionGap`
 updates, inserts, or removes the canonical gap directive. All operations validate the
 result before returning it.

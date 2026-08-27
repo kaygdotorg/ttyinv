@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 use ttyinv_core::{
     execute, CommandOutcome, Document, EditOperationInput, FontScale, FontWeight, FrameInset, Gap,
-    InvoiceCommand, SectionBody, Source, TableAlignment,
+    InvoiceCommand, PreparedRender, RenderFormat, RenderOptionsInput, SectionBody, Source,
+    TableAlignment,
 };
 
 #[derive(Debug)]
@@ -42,6 +43,18 @@ fn revision(source: &str) -> String {
         Ok(CommandOutcome::Validated { revision, .. }) => revision,
         Err(_) => String::new(),
         Ok(_) => unreachable!(),
+    }
+}
+fn prepare(source: &str) -> PreparedRender {
+    match execute(InvoiceCommand::PrepareRender {
+        source: Source::Markdown(Cow::Owned(source.to_owned())),
+        options: RenderOptionsInput {
+            format: RenderFormat::Html,
+            ..Default::default()
+        },
+    }) {
+        Ok(CommandOutcome::Prepared { plan }) => plan,
+        other => panic!("expected prepared render, got {other:?}"),
     }
 }
 fn serialize_markdown(document: &Document) -> String {
@@ -299,6 +312,7 @@ fn scalar_paths_and_source_edits() {
         );
         source = response.source;
     }
+
     assert!(source.contains("Design"));
     assert!(apply_edit(request(
         &source,
@@ -310,6 +324,87 @@ fn scalar_paths_and_source_edits() {
     .diagnostics
     .iter()
     .any(|d| d.code == "EDIT003"));
+}
+#[test]
+fn appearance_config_scalars_edit_frontmatter_and_prepare() {
+    let mut source = SOURCE.to_owned();
+    for (path, value, key) in [
+        ("config.format", "code-dot-comma", "format"),
+        ("config.theme", "graphite", "theme"),
+        ("config.font", "cousine", "font"),
+        ("config.density", "compact", "density"),
+    ] {
+        let response = apply_edit(request(
+            &source,
+            EditOperation::SetScalar {
+                path: path.into(),
+                value: value.into(),
+            },
+        ));
+        assert!(
+            response.diagnostics.is_empty(),
+            "{path}: {:?}",
+            response.diagnostics
+        );
+        assert!(response.source.contains(&format!("{key}: {value}")));
+        source = response.source;
+    }
+
+    let doc = document(&source).expect("edited appearance must validate");
+    assert_eq!(doc.config.format, "code-dot-comma");
+    assert_eq!(doc.config.theme, "graphite");
+    assert_eq!(doc.config.font, "cousine");
+    assert_eq!(doc.config.density, "compact");
+    let baseline = prepare(SOURCE);
+    let plan = prepare(&source);
+    assert_eq!(plan.money_format, "code-dot-comma");
+    assert_eq!(plan.font, "cousine");
+    assert_ne!(plan.tokens, baseline.tokens);
+    assert!(plan.density_space < baseline.density_space);
+}
+
+#[test]
+fn appearance_config_scalars_reject_unknown_values_and_remove_accent() {
+    for (path, value, diagnostic) in [
+        ("config.format", "unknown-format", "unsupported format"),
+        ("config.theme", "unknown-theme", "unsupported theme"),
+        ("config.font", "unknown-font", "unsupported font"),
+        ("config.density", "unknown-density", "unsupported density"),
+    ] {
+        let response = apply_edit(request(
+            SOURCE,
+            EditOperation::SetScalar {
+                path: path.into(),
+                value: value.into(),
+            },
+        ));
+        assert!(
+            response.diagnostics.iter().any(|d| d.message == diagnostic),
+            "{path}: {:?}",
+            response.diagnostics
+        );
+    }
+
+    let removed = apply_edit(request(
+        SOURCE,
+        EditOperation::SetScalar {
+            path: "config.accent".into(),
+            value: String::new(),
+        },
+    ));
+    assert!(removed.diagnostics.is_empty(), "{:?}", removed.diagnostics);
+    assert!(!removed.source.contains("accent:"));
+    assert_eq!(document(&removed.source).unwrap().config.accent, None);
+
+    let rejected = apply_edit(request(
+        SOURCE,
+        EditOperation::SetScalar {
+            path: "config.theme".into(),
+            value: String::new(),
+        },
+    ));
+    assert_eq!(rejected.source, SOURCE);
+    assert!(rejected.diagnostics.iter().any(|d| d.code == "EDIT004"));
 }
 
 #[test]
