@@ -83,6 +83,20 @@ Rendering never fetches external assets. Images must be bounded asset bytes supp
 the adapter and validated by the executor. Invalid documents, options, assets, and
 oversize output return typed `CommandError` values.
 
+## Command-envelope transport
+
+The CLI exposes the public executor directly with `ttyinv execute`. It reads one JSON
+`InvoiceCommand` envelope from stdin, or from `--input FILE`, calls `execute` once, and
+writes one JSON `CommandOutcome` to stdout. Executor failures write the serialized
+`CommandError` to stdout and use the established CLI exit-code mapping. Malformed JSON,
+unknown command kinds, and unknown envelope fields are invalid requests.
+
+The command envelope is limited to 256 KiB at the CLI boundary. Core source and asset
+limits still apply after deserialization. In JSON, `Rendered.bytes` is an array of
+unsigned octets (`0` through `255`), preserving every rendered byte without encoding
+loss. This is the CLI JSON representation; adapters may expose an equivalent binary
+view for the same bytes.
+
 Formats are `code-comma-dot`, `code-dot-comma`, `code-space-comma`, `code-indian`,
 and `code-plain`. Themes are `printable`, `paper-white`, `graphite`, `blueprint`,
 `ledger-pad`, `solarized-light`, `parchment`, `midnight`, `nord`, and `gruvbox-dark`.

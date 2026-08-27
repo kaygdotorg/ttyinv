@@ -20,13 +20,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ttyinv_cli::exit;
 use ttyinv_core::{
-    execute, CanonicalFormat, CommandError, CommandErrorCode, CommandOutcome, Document,
+    execute, CanonicalFormat, CommandError, CommandErrorCode, CommandOutcome, Diagnostic, Document,
     EditOperationInput, FontWeight, InspectMode, InvoiceCommand, InvoiceDraft,
-    PresentationConfigInput, RenderAssetInput, RenderFormat, RenderOptionsInput, Source,
-    MAX_ASSET_BYTES, MAX_SOURCE_BYTES, PAGE_WIDTH,
+    PresentationConfigInput, RenderAssetInput, RenderFormat, RenderOptionsInput, RetryClass,
+    Severity, Source, MAX_ASSET_BYTES, MAX_SOURCE_BYTES, PAGE_WIDTH,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Keep command envelopes bounded like the WASM adapter's decoded request budget.
+const MAX_COMMAND_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InputFormat {
@@ -51,6 +53,7 @@ fn run(a: Vec<String>) -> i32 {
         Some("prepare-render") => prepare_render_cmd(&a[1..]),
         Some("render") => render_cmd(&a[1..]),
         Some("presentation") | Some("resolve-presentation") => presentation_cmd(&a[1..]),
+        Some("execute") => execute_cmd(&a[1..]),
         Some("--help") | Some("-h") | None => {
             print_help();
             exit::SUCCESS
@@ -67,6 +70,9 @@ ttyinv inspect INPUT [--from markdown|json|yaml] [--mode structure|summary|manif
 ttyinv convert INPUT --to markdown|json|yaml [--output FILE|--stdout] [--from markdown|json|yaml]\n\
 ttyinv schema [--output FILE]\n\
 ttyinv registry\n\
+ttyinv execute [--input FILE]\n\
+  Reads one JSON InvoiceCommand envelope from FILE or stdin and writes one JSON\n\
+  CommandOutcome or CommandError. Rendered bytes are an array of unsigned octets.\n\
 ttyinv render INPUT --format html|pdf|png [--output FILE|--stdout] [--force] [--from markdown|json|yaml] \
 [--asset-base DIR] [--theme THEME] [--font FONT] [--font-weight regular|semibold] \
 [--density comfortable|compact] [--accent #rrggbb] [--font-scale 100..=140] \
@@ -97,6 +103,224 @@ fn read(path: &str) -> Result<String, i32> {
         return Err(exit::INPUT);
     }
     String::from_utf8(b).map_err(|_| exit::INPUT)
+}
+fn command_request_error(message: impl Into<String>) -> CommandError {
+    CommandError {
+        code: CommandErrorCode::InvalidRequest,
+        diagnostics: vec![command_diagnostic("REQUEST001", message)],
+        retry: RetryClass::AfterInputChange,
+    }
+}
+
+fn command_diagnostic(code: &str, message: impl Into<String>) -> Diagnostic {
+    Diagnostic {
+        severity: Severity::Error,
+        code: code.to_owned(),
+        message: message.into(),
+        path: None,
+        field_path: None,
+        line: None,
+        column: None,
+        hint: None,
+        section: None,
+        section_index: None,
+        row: None,
+        column_name: None,
+    }
+}
+
+fn command_allowed_fields(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "create" => Some(&["kind", "draft"]),
+        "validate" => Some(&["kind", "source"]),
+        "inspect" => Some(&["kind", "source", "mode"]),
+        "convert" => Some(&["kind", "source", "to"]),
+        "edit" => Some(&["kind", "source", "base_revision", "operation"]),
+        "prepare_render" => Some(&["kind", "source", "options"]),
+        "resolve_presentation" => Some(&["kind", "config"]),
+        "render" => Some(&["kind", "source", "options"]),
+        "registry" => Some(&["kind"]),
+        _ => None,
+    }
+}
+
+fn read_command(path: &str) -> Result<String, (CommandError, i32)> {
+    let mut bytes = Vec::new();
+    let result = if path == "-" {
+        io::stdin()
+            .take(MAX_COMMAND_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+    } else {
+        let file = File::open(path).map_err(|error| {
+            (
+                command_request_error(format!("cannot read command input: {error}")),
+                exit::INPUT,
+            )
+        })?;
+        file.take(MAX_COMMAND_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+    };
+    if result.is_err() {
+        return Err((
+            command_request_error("cannot read command input"),
+            exit::INPUT,
+        ));
+    }
+    if bytes.len() > MAX_COMMAND_BYTES {
+        return Err((
+            CommandError {
+                code: CommandErrorCode::Limit,
+                diagnostics: vec![command_diagnostic(
+                    "LIMIT001",
+                    format!("command envelope exceeds {MAX_COMMAND_BYTES} bytes"),
+                )],
+                retry: RetryClass::AfterInputChange,
+            },
+            exit::INPUT,
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        (
+            command_request_error("command envelope must be UTF-8 JSON"),
+            exit::INPUT,
+        )
+    })
+}
+
+fn write_json_line(value: String) -> bool {
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(value.as_bytes()).is_ok() && stdout.write_all(b"\n").is_ok()
+}
+
+fn write_command_error(error: &CommandError) -> bool {
+    match serde_json::to_string(error) {
+        Ok(value) => write_json_line(value),
+        Err(_) => false,
+    }
+}
+
+fn write_command_outcome(outcome: &CommandOutcome) -> bool {
+    match serde_json::to_string(outcome) {
+        Ok(value) => write_json_line(value),
+        Err(_) => false,
+    }
+}
+
+fn execute_cmd(a: &[String]) -> i32 {
+    let mut input: Option<&str> = None;
+    let mut index = 0;
+    while index < a.len() {
+        match a[index].as_str() {
+            "--input" => {
+                if input.is_some() || index + 1 == a.len() {
+                    return usage("--input requires exactly one FILE");
+                }
+                input = Some(&a[index + 1]);
+                index += 1;
+            }
+            "--help" | "-h" => {
+                if a.len() != 1 {
+                    return usage("--help cannot be combined with other arguments");
+                }
+                print_help();
+                return exit::SUCCESS;
+            }
+            _ => return usage("execute accepts only --input FILE"),
+        }
+        index += 1;
+    }
+
+    let source = match read_command(input.unwrap_or("-")) {
+        Ok(source) => source,
+        Err((error, fallback)) => {
+            if !write_command_error(&error) {
+                return exit::OUTPUT;
+            }
+            return if error.code == CommandErrorCode::Limit {
+                command_error_exit(&error, fallback)
+            } else {
+                fallback
+            };
+        }
+    };
+    let value: serde_json::Value = match serde_json::from_str(&source) {
+        Ok(value) => value,
+        Err(error) => {
+            let command_error = command_request_error(format!("invalid command JSON: {error}"));
+            if !write_command_error(&command_error) {
+                return exit::OUTPUT;
+            }
+            return command_error_exit(&command_error, exit::INPUT);
+        }
+    };
+    let object = match value.as_object() {
+        Some(object) => object,
+        None => {
+            let command_error = command_request_error("command envelope must be a JSON object");
+            if !write_command_error(&command_error) {
+                return exit::OUTPUT;
+            }
+            return command_error_exit(&command_error, exit::INPUT);
+        }
+    };
+    let kind = match object.get("kind").and_then(serde_json::Value::as_str) {
+        Some(kind) => kind.to_owned(),
+        None => {
+            let command_error =
+                command_request_error("command envelope requires string field `kind`");
+            if !write_command_error(&command_error) {
+                return exit::OUTPUT;
+            }
+            return command_error_exit(&command_error, exit::INPUT);
+        }
+    };
+    let Some(allowed) = command_allowed_fields(&kind) else {
+        let command_error = command_request_error(format!("unknown command kind `{kind}`"));
+        if !write_command_error(&command_error) {
+            return exit::OUTPUT;
+        }
+        return command_error_exit(&command_error, exit::INPUT);
+    };
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        let command_error = command_request_error(format!("unknown command field `{field}`"));
+        if !write_command_error(&command_error) {
+            return exit::OUTPUT;
+        }
+        return command_error_exit(&command_error, exit::INPUT);
+    }
+    let command: InvoiceCommand<'static> = match serde_json::from_value(value) {
+        Ok(command) => command,
+        Err(error) => {
+            let command_error = command_request_error(format!("invalid command envelope: {error}"));
+            if !write_command_error(&command_error) {
+                return exit::OUTPUT;
+            }
+            return command_error_exit(&command_error, exit::INPUT);
+        }
+    };
+    match execute(command) {
+        Ok(outcome) => {
+            if write_command_outcome(&outcome) {
+                exit::SUCCESS
+            } else {
+                exit::OUTPUT
+            }
+        }
+        Err(error) => {
+            if !write_command_error(&error) {
+                return exit::OUTPUT;
+            }
+            let fallback = if kind == "render" {
+                exit::RENDER
+            } else {
+                exit::DOCUMENT_INVALID
+            };
+            command_error_exit(&error, fallback)
+        }
+    }
 }
 
 fn usage(s: &str) -> i32 {

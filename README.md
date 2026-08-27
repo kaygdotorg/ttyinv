@@ -33,7 +33,14 @@ ttyinv render invoice.md --format html --stdout
 ttyinv resolve-presentation
 ttyinv registry
 ttyinv schema --output ttyinv-v2.schema.json
+ttyinv execute --input command.json
+cat command.json | ttyinv execute
 ```
+
+`execute` accepts the exact JSON `InvoiceCommand` envelope used by the shared executor.
+It accepts stdin by default or one `--input FILE` argument. It emits one serialized
+`CommandOutcome` on success, or one serialized `CommandError` on failure. Rendered
+`bytes` values are JSON arrays of unsigned octets, so the representation is lossless.
 
 CLI section positions are one based. Core edit operations use zero-based ordinary
 section indices. In-place edits use a sibling temporary file and rename.

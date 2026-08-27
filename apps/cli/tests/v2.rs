@@ -822,3 +822,93 @@ fn cli_adapter_has_no_operation_specific_core_calls() {
         );
     }
 }
+
+#[test]
+fn execute_accepts_every_registry_command_envelope() {
+    let root = std::env::temp_dir().join(format!("ttyinv-v2-envelope-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let draft = r#"{"title":"Created invoice","metadata":{"number":"INV-2026-001","issued":"2026-01-01","currency":"EUR"},"from":{"name":"Northstar Studio"},"bill_to":{"name":"Acme Research Ltd"}}"#;
+    let source = serde_json::to_string(SOURCE).unwrap();
+    let commands = [
+        ("create", format!(r#"{{"kind":"create","draft":{draft}}}"#)),
+        (
+            "validate",
+            format!(r#"{{"kind":"validate","source":{{"markdown":{source}}}}}"#),
+        ),
+        (
+            "inspect",
+            format!(r#"{{"kind":"inspect","source":{{"markdown":{source}}},"mode":"summary"}}"#),
+        ),
+        (
+            "convert",
+            format!(r#"{{"kind":"convert","source":{{"markdown":{source}}},"to":"json"}}"#),
+        ),
+        (
+            "prepare-render",
+            format!(
+                r#"{{"kind":"prepare_render","source":{{"markdown":{source}}},"options":{{"format":"html"}}}}"#
+            ),
+        ),
+        (
+            "render",
+            format!(
+                r#"{{"kind":"render","source":{{"markdown":{source}}},"options":{{"format":"html"}}}}"#
+            ),
+        ),
+        (
+            "resolve-presentation",
+            r#"{"kind":"resolve_presentation","config":{}}"#.to_owned(),
+        ),
+        ("registry", r#"{"kind":"registry"}"#.to_owned()),
+    ];
+    for (name, command) in commands {
+        let input = root.join(format!("{name}.json"));
+        fs::write(&input, command).unwrap();
+        let output = run(&["execute", "--input", input.to_str().unwrap()]);
+        assert!(output.status.success(), "{name}: {output:?}");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 1, "{name}: {value}");
+    }
+
+    let validated = run(&[
+        "execute",
+        "--input",
+        root.join("validate.json").to_str().unwrap(),
+    ]);
+    let validated: serde_json::Value = serde_json::from_slice(&validated.stdout).unwrap();
+    let revision = validated["validated"]["revision"].as_str().unwrap();
+    let edit = format!(
+        r#"{{"kind":"edit","source":{{"markdown":{source}}},"base_revision":{revision:?},"operation":{{"kind":"set_scalar","path":"metadata.terms","value":"Net 30"}}}}"#
+    );
+    let edit_input = root.join("edit.json");
+    fs::write(&edit_input, edit).unwrap();
+    let edited = run(&["execute", "--input", edit_input.to_str().unwrap()]);
+    assert!(edited.status.success(), "edit: {edited:?}");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn execute_reports_malformed_and_unknown_envelopes() {
+    let malformed = {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_ttyinv"))
+            .args(["execute"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"{").unwrap();
+        child.wait_with_output().unwrap()
+    };
+    assert_eq!(malformed.status.code(), Some(2));
+    let malformed: serde_json::Value = serde_json::from_slice(&malformed.stdout).unwrap();
+    assert_eq!(malformed["code"], "invalid_request");
+
+    let root =
+        std::env::temp_dir().join(format!("ttyinv-v2-envelope-unknown-{}", std::process::id()));
+    fs::write(&root, r#"{"kind":"registry","unknown":true}"#).unwrap();
+    let unknown = run(&["execute", "--input", root.to_str().unwrap()]);
+    assert_eq!(unknown.status.code(), Some(2));
+    let unknown: serde_json::Value = serde_json::from_slice(&unknown.stdout).unwrap();
+    assert_eq!(unknown["code"], "invalid_request");
+    let _ = fs::remove_file(root);
+}
