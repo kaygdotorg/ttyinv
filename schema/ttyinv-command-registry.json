@@ -1,0 +1,579 @@
+{
+  "version": "ttyinv/v2",
+  "commands": [
+    {
+      "id": "create",
+      "description": "Create a document from a typed draft.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes"
+      ],
+      "formats": [
+        "markdown"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_request",
+        "invalid_document",
+        "limit"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "validate",
+      "description": "Validate and canonicalize a source document.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes"
+      ],
+      "formats": [
+        "markdown",
+        "json",
+        "yaml"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_document",
+        "limit"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "inspect",
+      "description": "Inspect safe document structure, summary, or manifest.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes"
+      ],
+      "formats": [
+        "markdown",
+        "json",
+        "yaml"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_document",
+        "limit"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "convert",
+      "description": "Convert a document to a canonical format.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes"
+      ],
+      "formats": [
+        "markdown",
+        "json",
+        "yaml"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_document",
+        "unsupported",
+        "limit"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "edit",
+      "description": "Apply one typed edit to a document.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes"
+      ],
+      "formats": [
+        "markdown",
+        "json",
+        "yaml"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "conflict",
+        "invalid_document",
+        "limit"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "prepare_render",
+      "description": "Prepare a bounded render plan for preview.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes",
+        "asset_bytes",
+        "asset_total_bytes"
+      ],
+      "formats": [
+        "html",
+        "pdf",
+        "png"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_document",
+        "invalid_asset",
+        "invalid_request",
+        "limit",
+        "font"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "resolve_presentation",
+      "description": "Resolve presentation configuration and geometry.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [],
+      "formats": [],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_request",
+        "font"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "render",
+      "description": "Render a source document.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [
+        "source_bytes",
+        "asset_bytes",
+        "asset_total_bytes",
+        "output_bytes"
+      ],
+      "formats": [
+        "html",
+        "pdf",
+        "png"
+      ],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [
+        "invalid_document",
+        "invalid_asset",
+        "invalid_request",
+        "limit",
+        "encoding",
+        "font",
+        "backend"
+      ],
+      "retry": "after_input_change"
+    },
+    {
+      "id": "registry",
+      "description": "Return command schemas and capabilities.",
+      "input_schema": "ttyinv/v2/command",
+      "output_schema": "ttyinv/v2/outcome",
+      "limits": [],
+      "formats": [],
+      "adapters": [
+        "native",
+        "cli",
+        "wasm",
+        "rest",
+        "mcp",
+        "webmcp"
+      ],
+      "errors": [],
+      "retry": "never"
+    }
+  ],
+  "document_schema": "{\n  \"$schema\": \"https://json-schema.org/draft/2020-12/schema\",\n  \"$id\": \"https://ttyinv.com/schema/ttyinv-v2.schema.json\",\n  \"title\": \"ttyinv/v2 frontmatter configuration\",\n  \"description\": \"Configuration keys for the ttyinv/v2 Markdown frontmatter. Document content is defined by SPEC.md.\",\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\"schema\"],\n  \"properties\": {\n    \"schema\": { \"const\": \"ttyinv/v2\" },\n    \"format\": { \"enum\": [\"code-comma-dot\", \"code-dot-comma\", \"code-space-comma\", \"code-indian\", \"code-plain\"], \"default\": \"code-comma-dot\" },\n    \"theme\": { \"enum\": [\"printable\", \"paper-white\", \"graphite\", \"blueprint\", \"ledger-pad\", \"solarized-light\", \"parchment\", \"midnight\", \"nord\", \"gruvbox-dark\"], \"default\": \"printable\" },\n    \"font\": { \"enum\": [\"geist-mono\", \"cousine\", \"fira\", \"ibm-plex\", \"inconsolata\", \"jetbrains\", \"roboto\", \"source-code\", \"space\", \"ubuntu\"], \"default\": \"geist-mono\" },\n    \"font-weight\": { \"enum\": [\"regular\", \"semibold\"], \"default\": \"regular\" },\n    \"density\": { \"enum\": [\"comfortable\", \"compact\"], \"default\": \"comfortable\" },\n    \"accent\": { \"type\": \"string\", \"pattern\": \"^#[0-9a-f]{6}$\" },\n    \"font-scale\": { \"type\": \"integer\", \"minimum\": 100, \"maximum\": 140, \"default\": 100 },\n    \"frame-inset\": { \"type\": \"integer\", \"minimum\": 30, \"maximum\": 60, \"default\": 54 }\n  }\n}\n",
+  "command_schema": "{\"$defs\":{\"directives\":{\"additionalProperties\":false,\"properties\":{\"gap\":{\"enum\":[\"none\",\"tight\",\"standard\",\"roomy\"]},\"page_break_before\":{\"type\":\"boolean\"},\"summary_only\":{\"type\":\"boolean\"}},\"required\":[\"gap\",\"page_break_before\",\"summary_only\"],\"type\":\"object\"},\"draft\":{\"additionalProperties\":false,\"properties\":{\"bill_to\":{\"$ref\":\"#/$defs/party\"},\"config\":{\"$ref\":\"#/$defs/draft_config\"},\"from\":{\"$ref\":\"#/$defs/party\"},\"metadata\":{\"$ref\":\"#/$defs/metadata\"},\"ordinary_sections\":{\"items\":{\"$ref\":\"#/$defs/section\"},\"type\":\"array\"},\"payment\":{\"anyOf\":[{\"$ref\":\"#/$defs/payment\"},{\"type\":\"null\"}]},\"settlements\":{\"anyOf\":[{\"$ref\":\"#/$defs/table\"},{\"type\":\"null\"}]},\"signature\":{\"anyOf\":[{\"$ref\":\"#/$defs/signature\"},{\"type\":\"null\"}]},\"title\":{\"type\":\"string\"}},\"required\":[\"title\",\"metadata\",\"from\",\"bill_to\"],\"type\":\"object\"},\"draft_config\":{\"additionalProperties\":false,\"properties\":{\"accent\":{\"type\":[\"string\",\"null\"]},\"density\":{\"type\":[\"string\",\"null\"]},\"font\":{\"type\":[\"string\",\"null\"]},\"font_scale\":{\"maximum\":140,\"minimum\":100,\"type\":[\"integer\",\"null\"]},\"font_weight\":{\"enum\":[\"regular\",\"semibold\",null]},\"format\":{\"type\":[\"string\",\"null\"]},\"frame_inset\":{\"maximum\":60,\"minimum\":30,\"type\":[\"integer\",\"null\"]},\"schema\":{\"type\":\"string\"},\"theme\":{\"type\":[\"string\",\"null\"]}},\"type\":\"object\"},\"identifier\":{\"additionalProperties\":false,\"properties\":{\"key\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"required\":[\"key\",\"value\"],\"type\":\"object\"},\"image\":{\"additionalProperties\":false,\"properties\":{\"alt\":{\"type\":\"string\"},\"src\":{\"type\":\"string\"}},\"required\":[\"alt\",\"src\"],\"type\":\"object\"},\"label_value\":{\"additionalProperties\":false,\"properties\":{\"label\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"required\":[\"label\",\"value\"],\"type\":\"object\"},\"metadata\":{\"additionalProperties\":false,\"properties\":{\"currency\":{\"type\":\"string\"},\"due\":{\"type\":[\"string\",\"null\"]},\"issued\":{\"type\":\"string\"},\"kind\":{\"type\":[\"string\",\"null\"]},\"number\":{\"type\":\"string\"},\"terms\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"number\",\"issued\",\"currency\"],\"type\":\"object\"},\"operation\":{\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"set_scalar\"},\"path\":{\"type\":\"string\"},\"value\":{\"type\":\"string\"}},\"required\":[\"kind\",\"path\",\"value\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"from\":{\"minimum\":0,\"type\":\"integer\"},\"kind\":{\"const\":\"move_section\"},\"to\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"kind\",\"from\",\"to\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"gap\":{\"enum\":[\"none\",\"tight\",\"standard\",\"roomy\"]},\"kind\":{\"const\":\"set_section_gap\"},\"section\":{\"minimum\":0,\"type\":\"integer\"}},\"required\":[\"kind\",\"section\",\"gap\"],\"type\":\"object\"}]},\"party\":{\"additionalProperties\":false,\"properties\":{\"address\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"email\":{\"type\":[\"string\",\"null\"]},\"identifiers\":{\"items\":{\"$ref\":\"#/$defs/identifier\"},\"type\":\"array\"},\"logo\":{\"anyOf\":[{\"$ref\":\"#/$defs/image\"},{\"type\":\"null\"}]},\"name\":{\"type\":\"string\"},\"website\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"name\"],\"type\":\"object\"},\"payment\":{\"additionalProperties\":false,\"properties\":{\"methods\":{\"items\":{\"additionalProperties\":false,\"properties\":{\"fields\":{\"items\":{\"$ref\":\"#/$defs/label_value\"},\"type\":\"array\"},\"title\":{\"type\":\"string\"}},\"required\":[\"title\"],\"type\":\"object\"},\"type\":\"array\"}},\"type\":\"object\"},\"presentation_config\":{\"additionalProperties\":false,\"properties\":{\"accent\":{\"type\":[\"string\",\"null\"]},\"density\":{\"type\":\"string\"},\"font\":{\"type\":\"string\"},\"font_scale\":{\"maximum\":140,\"minimum\":100,\"type\":\"integer\"},\"font_weight\":{\"enum\":[\"regular\",\"semibold\"]},\"frame_inset\":{\"maximum\":60,\"minimum\":30,\"type\":\"integer\"},\"theme\":{\"type\":\"string\"}},\"type\":\"object\"},\"render_asset\":{\"additionalProperties\":false,\"properties\":{\"bytes\":{},\"mime\":{\"type\":[\"string\",\"null\"]},\"source\":{\"type\":\"string\"}},\"required\":[\"source\",\"bytes\"],\"type\":\"object\"},\"render_options\":{\"additionalProperties\":false,\"properties\":{\"accent\":{\"type\":[\"string\",\"null\"]},\"assets\":{\"items\":{\"$ref\":\"#/$defs/render_asset\"},\"type\":\"array\"},\"density\":{\"type\":[\"string\",\"null\"]},\"font\":{\"type\":[\"string\",\"null\"]},\"font_scale\":{\"maximum\":140,\"minimum\":100,\"type\":[\"integer\",\"null\"]},\"font_weight\":{\"enum\":[\"regular\",\"semibold\",null]},\"format\":{\"enum\":[\"html\",\"pdf\",\"png\"]},\"frame_inset\":{\"maximum\":60,\"minimum\":30,\"type\":[\"integer\",\"null\"]},\"png_scale\":{\"maximum\":2,\"minimum\":1,\"type\":[\"integer\",\"null\"]},\"theme\":{\"type\":[\"string\",\"null\"]}},\"required\":[\"format\"],\"type\":\"object\"},\"section\":{\"additionalProperties\":false,\"properties\":{\"body\":{\"oneOf\":[{\"type\":\"string\"},{\"$ref\":\"#/$defs/table\"}]},\"directives\":{\"$ref\":\"#/$defs/directives\"},\"title\":{\"type\":\"string\"}},\"required\":[\"title\",\"body\"],\"type\":\"object\"},\"signature\":{\"additionalProperties\":false,\"properties\":{\"image\":{\"anyOf\":[{\"$ref\":\"#/$defs/image\"},{\"type\":\"null\"}]},\"label\":{\"type\":\"string\"},\"name\":{\"type\":\"string\"}},\"required\":[\"name\",\"label\"],\"type\":\"object\"},\"source\":{\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"markdown\":{\"type\":\"string\"}},\"required\":[\"markdown\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"json\":{\"type\":\"string\"}},\"required\":[\"json\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"yaml\":{\"type\":\"string\"}},\"required\":[\"yaml\"],\"type\":\"object\"}]},\"table\":{\"additionalProperties\":false,\"properties\":{\"alignments\":{\"type\":\"array\"},\"headings\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"rows\":{\"items\":{\"items\":{\"type\":\"string\"},\"type\":\"array\"},\"type\":\"array\"}},\"required\":[\"headings\",\"rows\"],\"type\":\"object\"}},\"$id\":\"https://ttyinv.com/schema/ttyinv-v2-command.schema.json\",\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"description\":\"Typed command envelope executed by the ttyinv core.\",\"oneOf\":[{\"additionalProperties\":false,\"properties\":{\"draft\":{\"$ref\":\"#/$defs/draft\"},\"kind\":{\"const\":\"create\"}},\"required\":[\"kind\",\"draft\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"validate\"},\"source\":{\"$ref\":\"#/$defs/source\"}},\"required\":[\"kind\",\"source\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"inspect\"},\"mode\":{\"enum\":[\"structure\",\"summary\",\"manifest\"]},\"source\":{\"$ref\":\"#/$defs/source\"}},\"required\":[\"kind\",\"source\",\"mode\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"convert\"},\"source\":{\"$ref\":\"#/$defs/source\"},\"to\":{\"enum\":[\"markdown\",\"json\",\"yaml\"]}},\"required\":[\"kind\",\"source\",\"to\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"base_revision\":{\"type\":\"string\"},\"kind\":{\"const\":\"edit\"},\"operation\":{\"$ref\":\"#/$defs/operation\"},\"source\":{\"$ref\":\"#/$defs/source\"}},\"required\":[\"kind\",\"source\",\"base_revision\",\"operation\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"prepare_render\"},\"options\":{\"$ref\":\"#/$defs/render_options\"},\"source\":{\"$ref\":\"#/$defs/source\"}},\"required\":[\"kind\",\"source\",\"options\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"config\":{\"$ref\":\"#/$defs/presentation_config\"},\"kind\":{\"const\":\"resolve_presentation\"}},\"required\":[\"kind\",\"config\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"render\"},\"options\":{\"$ref\":\"#/$defs/render_options\"},\"source\":{\"$ref\":\"#/$defs/source\"}},\"required\":[\"kind\",\"source\",\"options\"],\"type\":\"object\"},{\"additionalProperties\":false,\"properties\":{\"kind\":{\"const\":\"registry\"}},\"required\":[\"kind\"],\"type\":\"object\"}],\"title\":\"ttyinv/v2 command\"}",
+  "capabilities": {
+    "commands": [
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Create a document from a typed draft.",
+        "errors": [
+          "invalid_request",
+          "invalid_document",
+          "limit"
+        ],
+        "formats": [
+          "markdown"
+        ],
+        "id": "create",
+        "limits": [
+          "source_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Validate and canonicalize a source document.",
+        "errors": [
+          "invalid_document",
+          "limit"
+        ],
+        "formats": [
+          "markdown",
+          "json",
+          "yaml"
+        ],
+        "id": "validate",
+        "limits": [
+          "source_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Inspect safe document structure, summary, or manifest.",
+        "errors": [
+          "invalid_document",
+          "limit"
+        ],
+        "formats": [
+          "markdown",
+          "json",
+          "yaml"
+        ],
+        "id": "inspect",
+        "limits": [
+          "source_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Convert a document to a canonical format.",
+        "errors": [
+          "invalid_document",
+          "unsupported",
+          "limit"
+        ],
+        "formats": [
+          "markdown",
+          "json",
+          "yaml"
+        ],
+        "id": "convert",
+        "limits": [
+          "source_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Apply one typed edit to a document.",
+        "errors": [
+          "conflict",
+          "invalid_document",
+          "limit"
+        ],
+        "formats": [
+          "markdown",
+          "json",
+          "yaml"
+        ],
+        "id": "edit",
+        "limits": [
+          "source_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Prepare a bounded render plan for preview.",
+        "errors": [
+          "invalid_document",
+          "invalid_asset",
+          "invalid_request",
+          "limit",
+          "font"
+        ],
+        "formats": [
+          "html",
+          "pdf",
+          "png"
+        ],
+        "id": "prepare_render",
+        "limits": [
+          "source_bytes",
+          "asset_bytes",
+          "asset_total_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Resolve presentation configuration and geometry.",
+        "errors": [
+          "invalid_request",
+          "font"
+        ],
+        "formats": [],
+        "id": "resolve_presentation",
+        "limits": [],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Render a source document.",
+        "errors": [
+          "invalid_document",
+          "invalid_asset",
+          "invalid_request",
+          "limit",
+          "encoding",
+          "font",
+          "backend"
+        ],
+        "formats": [
+          "html",
+          "pdf",
+          "png"
+        ],
+        "id": "render",
+        "limits": [
+          "source_bytes",
+          "asset_bytes",
+          "asset_total_bytes",
+          "output_bytes"
+        ],
+        "retry": "after_input_change"
+      },
+      {
+        "adapters": [
+          "native",
+          "cli",
+          "wasm",
+          "rest",
+          "mcp",
+          "webmcp"
+        ],
+        "description": "Return command schemas and capabilities.",
+        "errors": [],
+        "formats": [],
+        "id": "registry",
+        "limits": [],
+        "retry": "never"
+      }
+    ],
+    "limits": {
+      "max_asset_bytes": 1048576,
+      "max_asset_total_bytes": 8388608,
+      "max_pages": 64,
+      "max_png_pixels": 2100000,
+      "max_png_total_pixels": 32000000,
+      "max_rendered_bytes": 67108864,
+      "max_source_bytes": 131072
+    },
+    "presentation": {
+      "densities": [
+        "comfortable",
+        "compact"
+      ],
+      "font_scale": {
+        "maximum": 140,
+        "minimum": 100
+      },
+      "fonts": [
+        {
+          "id": "geist-mono",
+          "label": "Geist Mono",
+          "regular_weight": 400,
+          "semibold_weight": 600
+        },
+        {
+          "id": "cousine",
+          "label": "Cousine",
+          "regular_weight": 400,
+          "semibold_weight": 700
+        },
+        {
+          "id": "fira",
+          "label": "Fira Mono",
+          "regular_weight": 400,
+          "semibold_weight": 700
+        },
+        {
+          "id": "ibm-plex",
+          "label": "IBM Plex Mono",
+          "regular_weight": 400,
+          "semibold_weight": 600
+        },
+        {
+          "id": "inconsolata",
+          "label": "Inconsolata",
+          "regular_weight": 400,
+          "semibold_weight": 600
+        },
+        {
+          "id": "jetbrains",
+          "label": "JetBrains Mono",
+          "regular_weight": 400,
+          "semibold_weight": 472
+        },
+        {
+          "id": "roboto",
+          "label": "Roboto Mono",
+          "regular_weight": 400,
+          "semibold_weight": 700
+        },
+        {
+          "id": "source-code",
+          "label": "Source Code Pro",
+          "regular_weight": 400,
+          "semibold_weight": 600
+        },
+        {
+          "id": "space",
+          "label": "Space Mono",
+          "regular_weight": 400,
+          "semibold_weight": 700
+        },
+        {
+          "id": "ubuntu",
+          "label": "Ubuntu Mono",
+          "regular_weight": 400,
+          "semibold_weight": 700
+        }
+      ],
+      "frame_inset": {
+        "maximum": 60,
+        "minimum": 30
+      },
+      "png_scale": {
+        "maximum": 2,
+        "minimum": 1
+      },
+      "themes": [
+        "printable",
+        "paper-white",
+        "graphite",
+        "blueprint",
+        "ledger-pad",
+        "solarized-light",
+        "parchment",
+        "midnight",
+        "nord",
+        "gruvbox-dark"
+      ]
+    },
+    "version": "ttyinv/v2"
+  }
+}

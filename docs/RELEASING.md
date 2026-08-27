@@ -8,7 +8,7 @@ make rust-release
 make wasm
 ```
 
-Review the v2 examples and conformance cases. Verify that generated output is absent
+Review the v2 examples and render-compat corpus. Verify that generated output is absent
 from the source tree. Verify that public fixtures use fabricated identities and
 `example.com` addresses.
 

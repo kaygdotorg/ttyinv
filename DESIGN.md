@@ -11,6 +11,12 @@
 - Frame placement is fixed; the corner glyphs use the same verified monospace font as the invoice.
 - Section labels such as `[ Contract fees ]`, `[ Notes ]`, and `[ Payment ]` share one left inset and cut through their horizontal rule.
 
+## Canonical renderer units
+
+The positioned render plan uses a 595 by 842 A4 unit space. `frame-inset` is measured from the paper edge in these units; the preview scales the sheet for display.
+
+Text primitives carry baselines. For a font with ascender `A`, descent magnitude `D`, and units per em `U`, a glyph centred on rule `y` has baseline `y + S * (A - D) / (2U)` at size `S`.
+
 ## Tables
 
 Tables intentionally have no outer box and no vertical cell borders. Alignment is produced by:

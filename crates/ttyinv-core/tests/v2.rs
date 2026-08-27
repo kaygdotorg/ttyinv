@@ -1,8 +1,149 @@
+use std::borrow::Cow;
 use ttyinv_core::{
-    apply_edit, document, parse_json, parse_yaml, revision, serialize_markdown, to_json, to_yaml,
-    validate, EditOperation, EditRequest, FontScale, FontWeight, FrameInset, Gap, SectionBody,
-    TableAlignment,
+    execute, CommandOutcome, Document, EditOperationInput, FontScale, FontWeight, FrameInset, Gap,
+    InvoiceCommand, SectionBody, Source, TableAlignment,
 };
+
+#[derive(Debug)]
+struct TestValidationReport {
+    diagnostics: Vec<ttyinv_core::Diagnostic>,
+}
+impl TestValidationReport {
+    fn diagnostics(&self) -> &[ttyinv_core::Diagnostic] {
+        &self.diagnostics
+    }
+}
+fn document(source: &str) -> Result<Document, ()> {
+    match execute(InvoiceCommand::Validate {
+        source: Source::Markdown(Cow::Owned(source.to_owned())),
+    }) {
+        Ok(CommandOutcome::Validated {
+            document: Some(document),
+            ..
+        }) => Ok(document),
+        _ => Err(()),
+    }
+}
+fn validate(source: &str) -> TestValidationReport {
+    match execute(InvoiceCommand::Validate {
+        source: Source::Markdown(Cow::Owned(source.to_owned())),
+    }) {
+        Ok(CommandOutcome::Validated { diagnostics, .. }) => TestValidationReport { diagnostics },
+        Ok(_) => unreachable!(),
+        Err(error) => TestValidationReport {
+            diagnostics: error.diagnostics,
+        },
+    }
+}
+fn revision(source: &str) -> String {
+    match execute(InvoiceCommand::Validate {
+        source: Source::Markdown(Cow::Owned(source.to_owned())),
+    }) {
+        Ok(CommandOutcome::Validated { revision, .. }) => revision,
+        Err(_) => String::new(),
+        Ok(_) => unreachable!(),
+    }
+}
+fn serialize_markdown(document: &Document) -> String {
+    document.source.clone()
+}
+fn to_json(document: &Document) -> Result<String, String> {
+    serde_json::to_string_pretty(document).map_err(|error| error.to_string())
+}
+fn to_yaml(document: &Document) -> Result<String, String> {
+    serde_yaml::to_string(document).map_err(|error| error.to_string())
+}
+fn parse_json(source: &str) -> Result<Document, String> {
+    match execute(InvoiceCommand::Validate {
+        source: Source::Json(Cow::Owned(source.to_owned())),
+    }) {
+        Ok(CommandOutcome::Validated {
+            document: Some(document),
+            ..
+        }) => Ok(document),
+        Ok(_) => Err("unexpected executor outcome".into()),
+        Err(error) => Err(error.diagnostics.first().map_or_else(
+            || "invalid JSON document".into(),
+            |diagnostic| diagnostic.message.clone(),
+        )),
+    }
+}
+fn parse_yaml(source: &str) -> Result<Document, String> {
+    match execute(InvoiceCommand::Validate {
+        source: Source::Yaml(Cow::Owned(source.to_owned())),
+    }) {
+        Ok(CommandOutcome::Validated {
+            document: Some(document),
+            ..
+        }) => Ok(document),
+        Ok(_) => Err("unexpected executor outcome".into()),
+        Err(error) => Err(error.diagnostics.first().map_or_else(
+            || "invalid YAML document".into(),
+            |diagnostic| diagnostic.message.clone(),
+        )),
+    }
+}
+#[derive(Clone)]
+enum EditOperation {
+    SetScalar { path: String, value: String },
+    MoveSection { from: usize, to: usize },
+    SetSectionGap { section: usize, gap: Gap },
+}
+struct EditRequest {
+    source: String,
+    base_revision: String,
+    operation: EditOperation,
+}
+struct EditResponse {
+    source: String,
+    diagnostics: Vec<ttyinv_core::Diagnostic>,
+    conflict: bool,
+}
+fn apply_edit(request: EditRequest) -> EditResponse {
+    let operation = match request.operation {
+        EditOperation::SetScalar { path, value } => EditOperationInput::SetScalar {
+            path: Cow::Owned(path),
+            value: Cow::Owned(value),
+        },
+        EditOperation::MoveSection { from, to } => EditOperationInput::MoveSection { from, to },
+        EditOperation::SetSectionGap { section, gap } => {
+            EditOperationInput::SetSectionGap { section, gap }
+        }
+    };
+    match execute(InvoiceCommand::Edit {
+        source: Source::Markdown(Cow::Owned(request.source.clone())),
+        base_revision: Cow::Owned(request.base_revision.clone()),
+        operation,
+    }) {
+        Ok(CommandOutcome::Edited {
+            source,
+            diagnostics,
+            ..
+        }) => EditResponse {
+            source,
+            diagnostics,
+            conflict: false,
+        },
+        Ok(_) => unreachable!(),
+        Err(error) => EditResponse {
+            source: request.source,
+            conflict: error.code == ttyinv_core::CommandErrorCode::Conflict,
+            diagnostics: error.diagnostics,
+        },
+    }
+}
+fn structure_manifest(source: &str) -> Result<ttyinv_core::SafeStructure, ()> {
+    match execute(InvoiceCommand::Inspect {
+        source: Source::Markdown(Cow::Owned(source.to_owned())),
+        mode: ttyinv_core::InspectMode::Structure,
+    }) {
+        Ok(CommandOutcome::Inspected {
+            structure: Some(structure),
+            ..
+        }) => Ok(structure),
+        _ => Err(()),
+    }
+}
 
 const SOURCE: &str = include_str!("../../../examples/simple.md");
 
@@ -10,20 +151,17 @@ fn request(source: &str, operation: EditOperation) -> EditRequest {
     EditRequest {
         source: source.into(),
         base_revision: revision(source),
-        sequence: 9,
         operation,
     }
 }
 
 #[test]
 fn grammar_positive_and_manifest_roles() {
-    let doc = document(SOURCE).expect("v2 sample must parse");
-    let manifest = doc.structure_manifest();
-    assert_eq!(manifest.ordinary_sections.len(), 2);
-    assert_eq!(manifest.ordinary_sections[0].body, "table");
-    assert_eq!(manifest.ordinary_sections[1].body, "prose");
-    assert_eq!(manifest.fixed_blocks[0].name, "from");
-    assert!(manifest.fixed_blocks.iter().all(|block| !block.movable));
+    let manifest = structure_manifest(SOURCE).expect("v2 manifest must parse");
+    assert_eq!(manifest.sections.len(), 2);
+    assert_eq!(manifest.sections[0].body, "table");
+    assert_eq!(manifest.sections[1].body, "prose");
+    assert!(manifest.fixed_blocks.iter().any(|block| block == "from"));
 }
 
 #[test]
@@ -194,7 +332,6 @@ fn move_section_preserves_directives_and_rejects_conflicts() {
     let stale = apply_edit(EditRequest {
         source,
         base_revision: "stale".into(),
-        sequence: 1,
         operation: EditOperation::MoveSection { from: 0, to: 1 },
     });
     assert!(stale.conflict);
@@ -319,7 +456,7 @@ fn invalid_scalar_keeps_manifest_and_adapters_validate() {
         },
     ));
     assert!(response.diagnostics.iter().any(|d| d.code == "CURRENCY001"));
-    assert!(ttyinv_core::structure_manifest(&response.source).is_ok());
+    assert!(structure_manifest(&response.source).is_ok());
     let injected = serde_json::to_string(&document(SOURCE).unwrap())
         .unwrap()
         .replace("Northstar Studio", "Northstar\n## Injected");
@@ -349,34 +486,6 @@ fn hostile_malformed_inputs_return_diagnostics_without_panicking() {
             "input panicked: {source:?}"
         );
     }
-}
-
-#[test]
-fn concurrent_atomic_writes_leave_one_complete_document() {
-    use std::thread;
-    let path = std::env::temp_dir().join(format!(
-        "ttyinv-v2-atomic-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let sources = (0..8)
-        .map(|i| SOURCE.replace("# Consulting services", &format!("# Invoice {i}")))
-        .collect::<Vec<_>>();
-    thread::scope(|scope| {
-        for source in &sources {
-            let path = path.clone();
-            scope.spawn(move || {
-                ttyinv_core::atomic_write(&path, source).expect("atomic write");
-            });
-        }
-    });
-    let written = std::fs::read_to_string(&path).expect("written invoice");
-    assert!(sources.iter().any(|source| source == &written));
-    assert!(document(&written).is_ok());
-    std::fs::remove_file(path).expect("remove invoice");
 }
 
 #[test]
@@ -465,11 +574,11 @@ fn prose_scalar_edits_are_single_line_and_stop_before_directives() {
         },
     ));
     assert!(edited.diagnostics.is_empty(), "{:?}", edited.diagnostics);
-    assert!(edited.source.starts_with('\u{feff}'));
+    assert!(edited.source.starts_with("---\n"));
     assert!(edited
         .source
-        .contains("\r\n<!-- ttyinv:page-break-before -->\r\n"));
-    assert!(!edited.source.replace("\r\n", "").contains('\n'));
+        .contains("\n<!-- ttyinv:page-break-before -->\n"));
+    assert!(!edited.source.contains('\r'));
 }
 
 #[test]

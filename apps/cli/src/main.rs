@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::env;
 #[cfg(target_os = "linux")]
 use std::ffi::CString;
+use std::fmt::Write as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 #[cfg(target_os = "linux")]
@@ -18,10 +20,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ttyinv_cli::exit;
 use ttyinv_core::{
-    apply_edit, document, parse_json, parse_yaml, render, render_document, revision, schema_json,
-    serialize_markdown, structure_manifest, to_json, to_yaml, validate, Document, EditOperation,
-    EditRequest, FontWeight, RenderAsset, RenderError, RenderFormat, RenderOptions, Severity,
-    ValidationReport, MAX_ASSET_BYTES, MAX_SOURCE_BYTES,
+    execute, CanonicalFormat, CommandError, CommandErrorCode, CommandOutcome, Document,
+    EditOperationInput, FontWeight, InspectMode, InvoiceCommand, InvoiceDraft,
+    PresentationConfigInput, RenderAssetInput, RenderFormat, RenderOptionsInput, Source,
+    MAX_ASSET_BYTES, MAX_SOURCE_BYTES, PAGE_WIDTH,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -33,28 +35,22 @@ enum InputFormat {
     Yaml,
 }
 
-impl InputFormat {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Markdown => "markdown",
-            Self::Json => "json",
-            Self::Yaml => "yaml",
-        }
-    }
-}
-
 fn main() -> ! {
     process::exit(run(env::args().skip(1).collect()))
 }
 
 fn run(a: Vec<String>) -> i32 {
     match a.first().map(String::as_str) {
+        Some("create") => create_cmd(&a[1..]),
         Some("validate") => validate_cmd(&a[1..]),
+        Some("inspect") | Some("sections") => inspect_cmd(&a[1..], a[0] == "sections"),
         Some("convert") => convert_cmd(&a[1..]),
-        Some("schema") => schema_cmd(&a[1..]),
-        Some("sections") => sections_cmd(&a[1..]),
+        Some("schema") => registry_cmd(&a[1..], false),
+        Some("registry") => registry_cmd(&a[1..], true),
         Some("edit") => edit_cmd(&a[1..]),
+        Some("prepare-render") => prepare_render_cmd(&a[1..]),
         Some("render") => render_cmd(&a[1..]),
+        Some("presentation") | Some("resolve-presentation") => presentation_cmd(&a[1..]),
         Some("--help") | Some("-h") | None => {
             print_help();
             exit::SUCCESS
@@ -64,19 +60,26 @@ fn run(a: Vec<String>) -> i32 {
 }
 fn print_help() {
     println!(
-        "ttyinv validate INPUT [--from markdown|json|yaml] [--json]\n\
+        "All commands use the shared ttyinv-core execute seam.\n\
+ttyinv create DRAFT [--from json|yaml] [--output FILE|--stdout]\n\
+ttyinv validate INPUT [--from markdown|json|yaml] [--json]\n\
+ttyinv inspect INPUT [--from markdown|json|yaml] [--mode structure|summary|manifest] [--json]\n\
 ttyinv convert INPUT --to markdown|json|yaml [--output FILE|--stdout] [--from markdown|json|yaml]\n\
 ttyinv schema [--output FILE]\n\
+ttyinv registry\n\
 ttyinv render INPUT --format html|pdf|png [--output FILE|--stdout] [--force] [--from markdown|json|yaml] \
-[--theme THEME] [--font FONT] [--font-weight regular|semibold] [--density comfortable|compact] \
-[--accent #rrggbb] [--font-scale 100..=140] [--frame-inset 30..=60]\n\
+[--asset-base DIR] [--theme THEME] [--font FONT] [--font-weight regular|semibold] \
+[--density comfortable|compact] [--accent #rrggbb] [--font-scale 100..=140] \
+[--frame-inset 30..=60] [--png-scale 1|2]\n\
+ttyinv prepare-render INPUT --format html|pdf|png [--output FILE|--stdout] [--from markdown|json|yaml]\n\
 ttyinv sections FILE [--json]\n\
+ttyinv presentation [--css]\n\
 ttyinv edit move-section FILE --from N --to N [--stdout|--check|--json]\n\
-ttyinv edit set-gap FILE --section N --gap GAP [--stdout|--check|--json]\n\
-ttyinv edit set-scalar FILE --path PATH --value VALUE [--stdout|--check|--json]"
+ttyinv edit set-gap FILE --section N --gap GAP [--from markdown|json|yaml] [--stdout|--check|--json]\n\
+ttyinv edit set-scalar FILE --path PATH --value VALUE [--from markdown|json|yaml] [--stdout|--check|--json]\n\
+In-place edit writes Markdown only. Use --stdout or --json for structured input."
     );
 }
-
 fn read(path: &str) -> Result<String, i32> {
     let mut b = Vec::new();
     let read_result = if path == "-" {
@@ -143,29 +146,34 @@ fn input_format(path: &str, explicit: Option<InputFormat>) -> Result<InputFormat
     })
 }
 
-fn report_text(report: &ValidationReport) {
-    for d in report.diagnostics() {
+fn report_diagnostics(diagnostics: &[ttyinv_core::Diagnostic]) {
+    for d in diagnostics {
         eprintln!(
             "{}[{}]: {}",
-            if d.severity == Severity::Error {
+            if d.severity == ttyinv_core::Severity::Error {
                 "error"
             } else {
                 "warning"
             },
             d.code,
             d.message
-        )
+        );
     }
 }
 
-fn decode_document(source: &str, format: InputFormat) -> Result<Document, String> {
+fn source_input(source: String, format: InputFormat) -> Source<'static> {
     match format {
-        InputFormat::Markdown => document(source).map_err(|report| {
-            report_text(&report);
-            "document is invalid".to_owned()
-        }),
-        InputFormat::Json => parse_json(source).map_err(|error| error.to_string()),
-        InputFormat::Yaml => parse_yaml(source).map_err(|error| error.to_string()),
+        InputFormat::Markdown => Source::Markdown(Cow::Owned(source)),
+        InputFormat::Json => Source::Json(Cow::Owned(source)),
+        InputFormat::Yaml => Source::Yaml(Cow::Owned(source)),
+    }
+}
+
+fn borrowed_source_input<'a>(source: &'a str, format: InputFormat) -> Source<'a> {
+    match format {
+        InputFormat::Markdown => Source::Markdown(Cow::Borrowed(source)),
+        InputFormat::Json => Source::Json(Cow::Borrowed(source)),
+        InputFormat::Yaml => Source::Yaml(Cow::Borrowed(source)),
     }
 }
 fn document_images(document: &Document) -> impl Iterator<Item = &ttyinv_core::Image> {
@@ -206,6 +214,8 @@ const AT_FDCWD: c_int = -100;
 const SYS_OPENAT2: c_long = 437;
 #[cfg(target_os = "linux")]
 const O_CLOEXEC: u64 = 0o2000000;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: u64 = 0o4000;
 #[cfg(target_os = "linux")]
 const O_DIRECTORY: u64 = 0o200000;
 #[cfg(target_os = "linux")]
@@ -271,13 +281,20 @@ fn open_asset_base(path: &Path) -> Result<File, String> {
 
 #[cfg(target_os = "linux")]
 fn open_relative_asset(base: &File, path: &Path, source: &str) -> Result<File, String> {
-    openat2(
+    let file = openat2(
         base.as_raw_fd(),
         path,
-        O_CLOEXEC,
+        O_CLOEXEC | O_NONBLOCK,
         RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     )
-    .map_err(|error| format!("cannot read asset {source:?}: {error}"))
+    .map_err(|error| format!("cannot read asset {source:?}: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("cannot stat asset {source:?}: {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!("cannot read asset {source:?}: not a regular file"));
+    }
+    Ok(file)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -297,9 +314,8 @@ fn read_asset(mut file: File, display: &str) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
-
 fn with_local_assets(
-    options: &mut RenderOptions,
+    options: &mut RenderOptionsInput<'static>,
     document: &Document,
     input: &str,
     asset_base: Option<&Path>,
@@ -346,13 +362,207 @@ fn with_local_assets(
             .expect("asset base descriptor initialized above");
         let file = open_relative_asset(base_descriptor, path, source)?;
         let bytes = read_asset(file, source)?;
-        options.assets.push(RenderAsset {
-            source: source.to_owned(),
-            bytes,
-            mime: asset_mime(path),
+        options.assets.push(RenderAssetInput {
+            source: Cow::Owned(source.to_owned()),
+            bytes: Cow::Owned(bytes),
+            mime: asset_mime(path).map(Cow::Owned),
         });
     }
     Ok(())
+}
+
+fn command_error_exit(error: &CommandError, fallback: i32) -> i32 {
+    report_diagnostics(&error.diagnostics);
+    match error.code {
+        CommandErrorCode::InvalidDocument | CommandErrorCode::Conflict => exit::DOCUMENT_INVALID,
+        CommandErrorCode::InvalidRequest | CommandErrorCode::Unsupported => exit::USAGE,
+        CommandErrorCode::Limit => fallback,
+        CommandErrorCode::InvalidAsset
+        | CommandErrorCode::Encoding
+        | CommandErrorCode::Font
+        | CommandErrorCode::Backend => exit::RENDER,
+    }
+}
+
+fn print_sections_text(sections: &[ttyinv_core::SafeSection]) {
+    for section in sections {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            section.index,
+            section.title,
+            section.body,
+            format!("{:?}", section.gap).to_lowercase(),
+            section.page_break_before,
+            section.summary_only
+        );
+    }
+}
+
+fn manifest_json(manifest: &ttyinv_core::SafeManifest) -> serde_json::Value {
+    serde_json::json!({
+        "fixed_blocks": manifest.fixed_blocks,
+        "ordinary_sections": manifest.sections,
+    })
+}
+fn source_error_exit(
+    error: &CommandError,
+    fallback: i32,
+    source: &str,
+    format: InputFormat,
+) -> i32 {
+    let malformed = match format {
+        InputFormat::Markdown => false,
+        InputFormat::Json => serde_json::from_str::<serde_json::Value>(source).is_err(),
+        InputFormat::Yaml => serde_yaml::from_str::<serde_yaml::Value>(source).is_err(),
+    };
+    if malformed {
+        report_diagnostics(&error.diagnostics);
+        return exit::INPUT;
+    }
+    command_error_exit(error, fallback)
+}
+
+fn write_output(path: &Path, bytes: &[u8], force: bool) -> io::Result<()> {
+    let output = prepare_output(path, force)?;
+    atomic_render_output(&output, bytes, force)
+}
+
+fn presentation_cmd(a: &[String]) -> i32 {
+    let css = match a {
+        [] => false,
+        [value] if value == "--css" => true,
+        _ => return usage("presentation accepts only --css"),
+    };
+    let result = execute(InvoiceCommand::ResolvePresentation {
+        config: PresentationConfigInput::default(),
+    });
+    let value = match result {
+        Ok(CommandOutcome::ResolvedPresentation { presentation }) => presentation,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
+        }
+        Err(error) => return command_error_exit(&error, exit::RENDER),
+    };
+    if css {
+        let mut generated = String::from(":root{");
+        for (name, number) in &value.geometry {
+            let _ = write!(generated, "--invoice-{name}:{number}px;");
+        }
+        let _ = write!(
+            generated,
+            "--invoice-page-width:595px;--invoice-page-height:842px;--invoice-frame-inset:{}px;\
+--invoice-content-left:{}px;--invoice-content-right:{}px;--invoice-content-top:{}px;\
+--invoice-content-bottom:{}px;--invoice-type-scale:{};--invoice-density-space:{};\
+--invoice-paper:{};--invoice-ink:{};--invoice-muted:{};--invoice-rule:{};--invoice-accent:{};--invoice-canvas:{};}}",
+            value.frame_inset,
+            value.content.left,
+            value.content.right,
+            value.content.top,
+            value.content.bottom,
+            value.scale.type_scale,
+            value.scale.density_space,
+            value.tokens.paper,
+            value.tokens.ink,
+            value.tokens.muted,
+            value.tokens.rule,
+            value.tokens.accent,
+            value.tokens.canvas
+        );
+        println!("{generated}");
+    } else {
+        match serde_json::to_string_pretty(&value) {
+            Ok(json) => println!("{json}"),
+            Err(_) => return exit::INTERNAL,
+        }
+    }
+    exit::SUCCESS
+}
+
+fn prepare_render_cmd(a: &[String]) -> i32 {
+    let mut path = None;
+    let mut explicit = None;
+    let mut format = None;
+    let mut output = None;
+    let mut stdout = false;
+    let mut options = RenderOptionsInput::default();
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--from" => {
+                i += 1;
+                let Some(value) = a.get(i) else {
+                    return usage("--from requires FORMAT");
+                };
+                explicit = parse_format(value);
+                if explicit.is_none() {
+                    return usage("--from must be markdown, json, or yaml");
+                }
+            }
+            "--format" => {
+                i += 1;
+                format = match a.get(i).map(String::as_str) {
+                    Some("html") => Some(RenderFormat::Html),
+                    Some("pdf") => Some(RenderFormat::Pdf),
+                    Some("png") => Some(RenderFormat::Png),
+                    _ => return usage("--format must be html, pdf, or png"),
+                };
+            }
+            "--output" => {
+                i += 1;
+                let Some(value) = a.get(i) else {
+                    return usage("--output requires FILE");
+                };
+                output = Some(PathBuf::from(value));
+            }
+            "--stdout" => stdout = true,
+            value if value.starts_with('-') => return usage("unknown prepare-render option"),
+            value if path.is_none() => path = Some(value),
+            _ => return usage("prepare-render accepts one INPUT"),
+        }
+        i += 1;
+    }
+    let Some(path) = path else {
+        return usage("prepare-render requires INPUT");
+    };
+    let Some(format) = format else {
+        return usage("prepare-render requires --format");
+    };
+    if output.is_some() && stdout {
+        return usage("choose --output or --stdout, not both");
+    }
+    options.format = format;
+    let input_format = match input_format(path, explicit) {
+        Ok(value) => value,
+        Err(error) => return usage(&error),
+    };
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
+    };
+    let plan = match execute(InvoiceCommand::PrepareRender {
+        source: borrowed_source_input(&source, input_format),
+        options,
+    }) {
+        Ok(CommandOutcome::Prepared { plan }) => plan,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
+        }
+        Err(error) => return source_error_exit(&error, exit::RENDER, &source, input_format),
+    };
+    let encoded = match serde_json::to_string_pretty(&plan) {
+        Ok(value) => value + "\n",
+        Err(_) => return exit::INTERNAL,
+    };
+    if let Some(path) = output {
+        if write_output(&path, encoded.as_bytes(), true).is_err() {
+            return exit::OUTPUT;
+        }
+    } else {
+        print!("{encoded}");
+    }
+    exit::SUCCESS
 }
 
 fn render_cmd(a: &[String]) -> i32 {
@@ -361,7 +571,7 @@ fn render_cmd(a: &[String]) -> i32 {
             "ttyinv render INPUT --format html|pdf|png [--output FILE|--stdout] [--force] \
 [--from markdown|json|yaml] [--asset-base DIR] [--theme THEME] [--font FONT] \
 [--font-weight regular|semibold] [--density comfortable|compact] \
-[--accent #rrggbb] [--font-scale 100..=140] [--frame-inset 30..=60]"
+[--accent #rrggbb] [--font-scale 100..=140] [--frame-inset 30..=60] [--png-scale 1|2]"
         );
         return exit::SUCCESS;
     }
@@ -372,7 +582,7 @@ fn render_cmd(a: &[String]) -> i32 {
     let mut output = None;
     let mut stdout = false;
     let mut force = false;
-    let mut options = RenderOptions::default();
+    let mut options = RenderOptionsInput::default();
     let mut i = 0;
     while i < a.len() {
         match a[i].as_str() {
@@ -427,7 +637,7 @@ fn render_cmd(a: &[String]) -> i32 {
                 if value.starts_with('-') {
                     return usage("--theme requires THEME");
                 }
-                options.theme = Some(value.clone());
+                options.theme = Some(Cow::Owned(value.clone()));
                 i += 1;
             }
             "--font" => {
@@ -437,7 +647,7 @@ fn render_cmd(a: &[String]) -> i32 {
                 if value.starts_with('-') {
                     return usage("--font requires FONT");
                 }
-                options.font = Some(value.clone());
+                options.font = Some(Cow::Owned(value.clone()));
                 i += 1;
             }
             "--font-weight" => {
@@ -455,14 +665,14 @@ fn render_cmd(a: &[String]) -> i32 {
                 let Some(value) = a.get(i + 1) else {
                     return usage("--density requires comfortable or compact");
                 };
-                options.density = Some(value.clone());
+                options.density = Some(Cow::Owned(value.clone()));
                 i += 1;
             }
             "--accent" => {
                 let Some(value) = a.get(i + 1) else {
                     return usage("--accent requires #rrggbb");
                 };
-                options.accent = Some(value.clone());
+                options.accent = Some(Cow::Owned(value.clone()));
                 i += 1;
             }
             "--font-scale" => {
@@ -482,6 +692,16 @@ fn render_cmd(a: &[String]) -> i32 {
                 options.frame_inset = match value.parse::<u8>() {
                     Ok(value) => Some(value),
                     Err(_) => return usage("--frame-inset requires an integer from 30 to 60"),
+                };
+                i += 1;
+            }
+            "--png-scale" => {
+                let Some(value) = a.get(i + 1) else {
+                    return usage("--png-scale requires 1 or 2");
+                };
+                options.png_scale = match value.parse::<u8>() {
+                    Ok(value @ 1..=2) => Some(value),
+                    _ => return usage("--png-scale requires 1 or 2"),
                 };
                 i += 1;
             }
@@ -531,76 +751,70 @@ fn render_cmd(a: &[String]) -> i32 {
         Ok(value) => value,
         Err(code) => return code,
     };
-    let result = if input_format == InputFormat::Markdown {
-        if let Ok(doc) = document(&source) {
-            if let Err(message) = with_local_assets(&mut options, &doc, path, asset_base.as_deref())
-            {
-                eprintln!("error: {message}");
-                return exit::RENDER;
-            }
+    let requested_png_scale = options.png_scale.unwrap_or(1);
+    let validated = match execute(InvoiceCommand::Validate {
+        source: borrowed_source_input(&source, input_format),
+    }) {
+        Ok(CommandOutcome::Validated { document, .. }) => document,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
         }
-        render(&source, options)
-    } else {
-        let doc = match decode_document(&source, input_format) {
-            Ok(value) => value,
-            Err(message) => {
-                eprintln!("error: {message}");
-                return exit::DOCUMENT_INVALID;
-            }
-        };
-        if let Err(message) = with_local_assets(&mut options, &doc, path, asset_base.as_deref()) {
-            eprintln!("error: {message}");
-            return exit::RENDER;
+        Err(error) => {
+            return source_error_exit(&error, exit::DOCUMENT_INVALID, &source, input_format)
         }
-        render_document(&doc, options)
     };
-    let result = match result {
-        Ok(value) => value,
-        Err(error) => return render_error_exit(error),
+    let Some(document) = validated else {
+        eprintln!("error: executor returned no validated document");
+        return exit::INTERNAL;
     };
+    if let Err(message) = with_local_assets(&mut options, &document, path, asset_base.as_deref()) {
+        eprintln!("error: {message}");
+        return exit::RENDER;
+    }
+    let result = match execute(InvoiceCommand::Render {
+        source: source_input(source, input_format),
+        options,
+    }) {
+        Ok(CommandOutcome::Rendered {
+            bytes,
+            width,
+            warnings,
+            ..
+        }) => (bytes, width, warnings),
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
+        }
+        Err(error) => return command_error_exit(&error, exit::RENDER),
+    };
+    let (bytes, width, warnings) = result;
+    for warning in &warnings {
+        if warning.code == "PNG_SCALE_REDUCED" {
+            let actual_png_scale = width / PAGE_WIDTH;
+            eprintln!(
+                "warning[{}]: {} (requested scale {}; actual scale {})",
+                warning.code, warning.message, requested_png_scale, actual_png_scale
+            );
+        } else {
+            eprintln!("warning[{}]: {}", warning.code, warning.message);
+        }
+    }
     if stdout {
         let mut handle = io::stdout();
         if handle
-            .write_all(&result.bytes)
+            .write_all(&bytes)
             .and_then(|_| handle.flush())
             .is_err()
         {
             return exit::OUTPUT;
         }
     } else if let Some(output) = prepared_output {
-        if atomic_render_output(&output, &result.bytes, force).is_err() {
+        if atomic_render_output(&output, &bytes, force).is_err() {
             return exit::OUTPUT;
         }
     }
     exit::SUCCESS
-}
-
-fn render_error_exit(error: RenderError) -> i32 {
-    match error {
-        RenderError::InvalidDocument(diagnostics) => {
-            for diagnostic in &diagnostics {
-                eprintln!("error[{}]: {}", diagnostic.code, diagnostic.message);
-            }
-            exit::DOCUMENT_INVALID
-        }
-        RenderError::SourceTooLarge { .. } => exit::INPUT,
-        RenderError::UnsupportedTheme(_)
-        | RenderError::UnsupportedFont(_)
-        | RenderError::UnsupportedDensity(_)
-        | RenderError::InvalidAccent(_)
-        | RenderError::InvalidOption(_) => {
-            eprintln!("error: {error}");
-            exit::USAGE
-        }
-        RenderError::InvalidAsset(_)
-        | RenderError::OutputTooLarge { .. }
-        | RenderError::Encoding(_)
-        | RenderError::Font(_)
-        | RenderError::Backend(_) => {
-            eprintln!("error: {error}");
-            exit::RENDER
-        }
-    }
 }
 
 struct PreparedOutput {
@@ -617,7 +831,6 @@ fn output_parent(path: &Path) -> &Path {
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
 }
-
 #[cfg(target_os = "linux")]
 fn prepare_output(path: &Path, force: bool) -> io::Result<PreparedOutput> {
     let name = path.file_name().ok_or_else(|| {
@@ -726,20 +939,127 @@ fn atomic_render_output(output: &PreparedOutput, _bytes: &[u8], _force: bool) ->
     ))
 }
 
-fn schema_cmd(a: &[String]) -> i32 {
+fn create_cmd(a: &[String]) -> i32 {
     if a.iter().any(|x| x == "--help" || x == "-h") {
-        println!("ttyinv schema [--output FILE]");
+        println!("ttyinv create DRAFT [--from json|yaml] [--output FILE|--stdout]");
         return exit::SUCCESS;
     }
-    let Some(i) = a.iter().position(|x| x == "--output") else {
-        print!("{}", schema_json());
+    let mut explicit = None;
+    let mut output = None;
+    let mut stdout = false;
+    let mut path = None;
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--from" => {
+                i += 1;
+                let Some(value) = a.get(i) else {
+                    return usage("--from requires json or yaml");
+                };
+                explicit = match value.as_str() {
+                    "json" => Some(InputFormat::Json),
+                    "yaml" => Some(InputFormat::Yaml),
+                    _ => return usage("--from must be json or yaml"),
+                };
+            }
+            "--output" => {
+                i += 1;
+                let Some(value) = a.get(i) else {
+                    return usage("--output requires FILE");
+                };
+                output = Some(PathBuf::from(value));
+            }
+            "--stdout" => stdout = true,
+            value if value.starts_with('-') => return usage("unknown create option"),
+            value if path.is_none() => path = Some(value),
+            _ => return usage("create accepts one DRAFT"),
+        }
+        i += 1;
+    }
+    let Some(path) = path else {
+        return usage("create requires DRAFT");
+    };
+    if output.is_some() && stdout {
+        return usage("choose --output or --stdout, not both");
+    }
+    let format = match input_format(path, explicit) {
+        Ok(InputFormat::Json) => InputFormat::Json,
+        Ok(InputFormat::Yaml) => InputFormat::Yaml,
+        Ok(InputFormat::Markdown) => return usage("create accepts JSON or YAML drafts"),
+        Err(error) => return usage(&error),
+    };
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
+    };
+    let draft = match format {
+        InputFormat::Json => {
+            serde_json::from_str::<InvoiceDraft<'_>>(&source).map_err(|error| error.to_string())
+        }
+        InputFormat::Yaml => {
+            serde_yaml::from_str::<InvoiceDraft<'_>>(&source).map_err(|error| error.to_string())
+        }
+        InputFormat::Markdown => unreachable!(),
+    };
+    let draft = match draft {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("error: invalid draft: {error}");
+            return exit::INPUT;
+        }
+    };
+    match execute(InvoiceCommand::Create {
+        draft: Box::new(draft),
+    }) {
+        Ok(CommandOutcome::Created { source, .. }) => {
+            if let Some(path) = output {
+                if write_output(Path::new(&path), source.as_bytes(), true).is_err() {
+                    return exit::OUTPUT;
+                }
+            } else {
+                print!("{source}");
+            }
+            exit::SUCCESS
+        }
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            exit::INTERNAL
+        }
+        Err(error) => command_error_exit(&error, exit::DOCUMENT_INVALID),
+    }
+}
+fn registry_cmd(a: &[String], full: bool) -> i32 {
+    if a.iter().any(|x| x == "--help" || x == "-h") {
+        println!("ttyinv schema [--output FILE]\nttyinv registry");
         return exit::SUCCESS;
+    }
+    let output = match a {
+        [] => None,
+        [flag, path] if flag == "--output" => Some(PathBuf::from(path)),
+        _ => return usage("schema accepts only --output FILE"),
     };
-    let Some(path) = a.get(i + 1) else {
-        return usage("--output requires FILE");
+    let registry = match execute(InvoiceCommand::Registry) {
+        Ok(CommandOutcome::Registry(value)) => value,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
+        }
+        Err(error) => return command_error_exit(&error, exit::OUTPUT),
     };
-    if ttyinv_core::atomic_write(Path::new(path), schema_json()).is_err() {
-        return exit::OUTPUT;
+    let encoded = if full {
+        match serde_json::to_string_pretty(&registry) {
+            Ok(value) => value + "\n",
+            Err(_) => return exit::INTERNAL,
+        }
+    } else {
+        registry.document_schema
+    };
+    if let Some(path) = output {
+        if write_output(&path, encoded.as_bytes(), true).is_err() {
+            return exit::OUTPUT;
+        }
+    } else {
+        print!("{encoded}");
     }
     exit::SUCCESS
 }
@@ -749,25 +1069,22 @@ fn validate_cmd(a: &[String]) -> i32 {
         println!("ttyinv validate INPUT [--from markdown|json|yaml] [--json]");
         return exit::SUCCESS;
     }
-    let mut json = false;
+    let json = a.iter().any(|x| x == "--json");
     let mut explicit = None;
     let mut path = None;
     let mut i = 0;
     while i < a.len() {
         match a[i].as_str() {
-            "--json" => json = true,
+            "--json" => {}
             "--from" => {
-                i += 1;
-                let Some(value) = a.get(i) else {
+                let Some(value) = a.get(i + 1) else {
                     return usage("--from requires FORMAT");
                 };
-                if value.starts_with('-') {
-                    return usage("--from requires FORMAT");
-                }
                 explicit = parse_format(value);
                 if explicit.is_none() {
                     return usage("--from must be markdown, json, or yaml");
                 }
+                i += 1;
             }
             value if value.starts_with('-') && value != "-" => {
                 return usage("unknown validate option")
@@ -784,41 +1101,50 @@ fn validate_cmd(a: &[String]) -> i32 {
         Ok(format) => format,
         Err(error) => return usage(&error),
     };
-    let Ok(source) = read(path) else {
-        return exit::INPUT;
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
     };
-    let report = match format {
-        InputFormat::Markdown => validate(&source),
-        _ => match decode_document(&source, format) {
-            Ok(document) => validate(&serialize_markdown(&document)),
-            Err(error) => {
-                if json {
-                    println!(
-                        "{}",
-                        serde_json::json!({"valid": false, "diagnostics": [], "error": format!("invalid {} input: {error}", format.name())})
-                    );
-                } else {
-                    eprintln!("error: invalid {} input: {error}", format.name());
-                }
-                return exit::INPUT;
+    match execute(InvoiceCommand::Validate {
+        source: borrowed_source_input(&source, format),
+    }) {
+        Ok(CommandOutcome::Validated {
+            revision,
+            valid,
+            diagnostics,
+            ..
+        }) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"valid": valid, "revision": revision, "diagnostics": diagnostics})
+                );
+            } else {
+                report_diagnostics(&diagnostics);
             }
-        },
-    };
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({"valid":report.is_valid(),"diagnostics":report.diagnostics()})
-        )
-    } else {
-        report_text(&report);
-    }
-    if report.is_valid() {
-        exit::SUCCESS
-    } else {
-        exit::DOCUMENT_INVALID
+            if valid {
+                exit::SUCCESS
+            } else {
+                exit::DOCUMENT_INVALID
+            }
+        }
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            exit::INTERNAL
+        }
+        Err(error) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"valid": false, "diagnostics": error.diagnostics})
+                );
+            } else {
+                report_diagnostics(&error.diagnostics);
+            }
+            source_error_exit(&error, exit::DOCUMENT_INVALID, &source, format)
+        }
     }
 }
-
 fn convert_cmd(a: &[String]) -> i32 {
     if a.iter().any(|x| x == "--help" || x == "-h") {
         println!(
@@ -839,9 +1165,6 @@ fn convert_cmd(a: &[String]) -> i32 {
                 let Some(value) = a.get(i) else {
                     return usage("--from requires FORMAT");
                 };
-                if value.starts_with('-') {
-                    return usage("--from requires FORMAT");
-                }
                 explicit = parse_format(value);
                 if explicit.is_none() {
                     return usage("--from must be markdown, json, or yaml");
@@ -852,9 +1175,6 @@ fn convert_cmd(a: &[String]) -> i32 {
                 let Some(value) = a.get(i) else {
                     return usage("--to requires FORMAT");
                 };
-                if value.starts_with('-') {
-                    return usage("--to requires FORMAT");
-                }
                 target = parse_format(value);
                 if target.is_none() {
                     return usage("--to must be markdown, json, or yaml");
@@ -868,7 +1188,7 @@ fn convert_cmd(a: &[String]) -> i32 {
                 if value.starts_with('-') {
                     return usage("--output requires FILE");
                 }
-                output = Some(value.as_str());
+                output = Some(PathBuf::from(value));
             }
             "--stdout" => stdout = true,
             value if value.starts_with('-') && value != "-" => {
@@ -888,45 +1208,31 @@ fn convert_cmd(a: &[String]) -> i32 {
     if output.is_some() && stdout {
         return usage("choose --output or --stdout, not both");
     }
-    let format = match input_format(path, explicit) {
-        Ok(format) => format,
-        Err(error) => return usage(&error),
+    let format = explicit
+        .or_else(|| auto_format(path))
+        .unwrap_or(InputFormat::Markdown);
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
     };
-    let Ok(source) = read(path) else {
-        return exit::INPUT;
+    let target = match target {
+        InputFormat::Markdown => CanonicalFormat::Markdown,
+        InputFormat::Json => CanonicalFormat::Json,
+        InputFormat::Yaml => CanonicalFormat::Yaml,
     };
-    let document = match decode_document(&source, format) {
-        Ok(document) => document,
-        Err(error) => {
-            if format != InputFormat::Markdown {
-                eprintln!("error: invalid {} input: {error}", format.name());
-            }
-            return if format == InputFormat::Markdown {
-                exit::DOCUMENT_INVALID
-            } else {
-                exit::INPUT
-            };
+    let converted = match execute(InvoiceCommand::Convert {
+        source: borrowed_source_input(&source, format),
+        to: target,
+    }) {
+        Ok(CommandOutcome::Converted { source, .. }) => source,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
         }
-    };
-    let converted = match target {
-        InputFormat::Markdown => serialize_markdown(&document),
-        InputFormat::Json => match to_json(&document) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("error: cannot encode json: {error}");
-                return exit::OUTPUT;
-            }
-        },
-        InputFormat::Yaml => match to_yaml(&document) {
-            Ok(value) => value,
-            Err(error) => {
-                eprintln!("error: cannot encode yaml: {error}");
-                return exit::OUTPUT;
-            }
-        },
+        Err(error) => return source_error_exit(&error, exit::DOCUMENT_INVALID, &source, format),
     };
     if let Some(path) = output {
-        if ttyinv_core::atomic_write(Path::new(path), &converted).is_err() {
+        if write_output(&path, converted.as_bytes(), true).is_err() {
             return exit::OUTPUT;
         }
     } else {
@@ -935,54 +1241,150 @@ fn convert_cmd(a: &[String]) -> i32 {
     exit::SUCCESS
 }
 
-fn sections_cmd(a: &[String]) -> i32 {
-    let json = a.iter().any(|x| x == "--json");
-    let Some(path) = a.iter().find(|x| !x.starts_with('-')) else {
-        return usage("sections requires FILE");
-    };
-    let Ok(s) = read(path) else {
-        return exit::INPUT;
-    };
-    let Ok(m) = structure_manifest(&s) else {
-        return exit::DOCUMENT_INVALID;
-    };
-    if json {
-        println!("{}", serde_json::to_string(&m).unwrap_or_default())
-    } else {
-        for x in &m.ordinary_sections {
-            println!(
-                "{}\t{}\t{}\t{}",
-                x.index + 1,
-                x.title,
-                x.body,
-                match x.gap {
-                    ttyinv_core::Gap::None => "none",
-                    ttyinv_core::Gap::Tight => "tight",
-                    ttyinv_core::Gap::Standard => "standard",
-                    ttyinv_core::Gap::Roomy => "roomy",
-                }
-            )
-        }
+fn inspect_cmd(a: &[String], sections_alias: bool) -> i32 {
+    if a.iter().any(|x| x == "--help" || x == "-h") {
+        println!(
+            "ttyinv inspect INPUT [--from markdown|json|yaml] [--mode structure|summary|manifest] [--json]"
+        );
+        return exit::SUCCESS;
     }
-    exit::SUCCESS
+    let json = a.iter().any(|x| x == "--json");
+    let mut explicit = None;
+    let mut mode = if sections_alias {
+        InspectMode::Manifest
+    } else {
+        InspectMode::Summary
+    };
+    let mut path = None;
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            "--json" => {}
+            "--from" => {
+                i += 1;
+                let Some(value) = a.get(i) else {
+                    return usage("--from requires FORMAT");
+                };
+                explicit = parse_format(value);
+                if explicit.is_none() {
+                    return usage("--from must be markdown, json, or yaml");
+                }
+            }
+            "--mode" => {
+                i += 1;
+                mode = match a.get(i).map(String::as_str) {
+                    Some("structure") => InspectMode::Structure,
+                    Some("summary") => InspectMode::Summary,
+                    Some("manifest") => InspectMode::Manifest,
+                    _ => return usage("--mode must be structure, summary, or manifest"),
+                };
+            }
+            value if value.starts_with('-') => return usage("unknown inspect option"),
+            value if path.is_none() => path = Some(value),
+            _ => return usage("inspect accepts one INPUT"),
+        }
+        i += 1;
+    }
+    let Some(path) = path else {
+        return usage("inspect requires INPUT");
+    };
+    if sections_alias {
+        mode = InspectMode::Manifest;
+    }
+    let format = explicit
+        .or_else(|| auto_format(path))
+        .unwrap_or(InputFormat::Markdown);
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
+    };
+    let result = execute(InvoiceCommand::Inspect {
+        source: borrowed_source_input(&source, format),
+        mode,
+    });
+    match result {
+        Ok(CommandOutcome::Inspected {
+            revision,
+            valid,
+            mode: inspected_mode,
+            structure,
+            summary,
+            manifest,
+            diagnostics,
+        }) => {
+            if json {
+                if sections_alias {
+                    let payload = manifest.as_ref().map(manifest_json).unwrap_or_else(
+                        || serde_json::json!({"fixed_blocks": [], "ordinary_sections": []}),
+                    );
+                    println!("{payload}");
+                    return exit::SUCCESS;
+                }
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "revision": revision,
+                        "valid": valid,
+                        "mode": inspected_mode,
+                        "structure": structure,
+                        "summary": summary,
+                        "manifest": manifest,
+                        "diagnostics": diagnostics
+                    })
+                );
+                return exit::SUCCESS;
+            }
+            match inspected_mode {
+                InspectMode::Structure => {
+                    if let Some(value) = structure {
+                        print_sections_text(&value.sections);
+                    }
+                }
+                InspectMode::Summary => {
+                    if let Some(value) = summary {
+                        println!(
+                            "revision: {revision}\nsections: {}\ntables: {}\nrows: {}",
+                            value.section_count, value.table_count, value.row_count
+                        );
+                    }
+                }
+                InspectMode::Manifest => {
+                    if let Some(value) = manifest {
+                        for block in value.fixed_blocks {
+                            println!("fixed\t{block}");
+                        }
+                        print_sections_text(&value.sections);
+                    }
+                }
+            }
+            exit::SUCCESS
+        }
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            exit::INTERNAL
+        }
+        Err(error) => source_error_exit(&error, exit::DOCUMENT_INVALID, &source, format),
+    }
 }
-
 fn edit_cmd(a: &[String]) -> i32 {
     if a.iter().any(|x| x == "--help" || x == "-h") {
         println!(
-            "ttyinv edit move-section FILE --from N --to N [--stdout|--check|--json]\nttyinv edit set-gap FILE --section N --gap GAP [--stdout|--check|--json]\nttyinv edit set-scalar FILE --path PATH --value VALUE [--stdout|--check|--json]"
+            "ttyinv edit move-section FILE --from N --to N [--stdout|--check|--json]\nttyinv edit set-gap FILE --section N --gap GAP [--stdout|--check|--json]\nttyinv edit set-scalar FILE --path PATH --value VALUE [--stdout|--check|--json]\n\
+Use --from markdown|json|yaml when FILE has no format extension. In-place edit writes Markdown only; use --stdout or --json for structured input."
         );
         return exit::SUCCESS;
     }
     if a.len() < 2 {
         return usage("edit requires operation and FILE");
-    };
+    }
     let op = a[0].as_str();
     let path = &a[1];
-    let Ok(s) = read(path) else {
-        return exit::INPUT;
+    let source = match read(path) {
+        Ok(value) => value,
+        Err(_) => return exit::INPUT,
     };
     let mut from = None;
+    let mut explicit_format = None;
     let mut to = None;
     let mut section = None;
     let mut gap = None;
@@ -996,19 +1398,29 @@ fn edit_cmd(a: &[String]) -> i32 {
         match a[i].as_str() {
             "--from" => {
                 i += 1;
-                from = a.get(i).and_then(|x| x.parse::<usize>().ok())
+                let Some(next) = a.get(i) else {
+                    return usage("--from requires N or FORMAT");
+                };
+                if let Ok(index) = next.parse::<usize>() {
+                    from = Some(index);
+                } else {
+                    explicit_format = parse_format(next);
+                    if explicit_format.is_none() {
+                        return usage("--from must be a section number or markdown, json, or yaml");
+                    }
+                }
             }
             "--to" => {
                 i += 1;
-                to = a.get(i).and_then(|x| x.parse::<usize>().ok())
+                to = a.get(i).and_then(|x| x.parse::<usize>().ok());
             }
             "--section" => {
                 i += 1;
-                section = a.get(i).and_then(|x| x.parse::<usize>().ok())
+                section = a.get(i).and_then(|x| x.parse::<usize>().ok());
             }
             "--gap" => {
                 i += 1;
-                gap = a.get(i).cloned()
+                gap = a.get(i).cloned();
             }
             "--path" => {
                 i += 1;
@@ -1034,8 +1446,8 @@ fn edit_cmd(a: &[String]) -> i32 {
             "--check" => check = true,
             "--json" => json = true,
             _ => return usage("unknown edit option"),
-        };
-        i += 1
+        }
+        i += 1;
     }
     let operation = match op {
         "move-section" => {
@@ -1045,7 +1457,7 @@ fn edit_cmd(a: &[String]) -> i32 {
             if from == 0 || to == 0 {
                 return usage("section indices are one-based");
             }
-            EditOperation::MoveSection {
+            EditOperationInput::MoveSection {
                 from: from - 1,
                 to: to - 1,
             }
@@ -1057,16 +1469,16 @@ fn edit_cmd(a: &[String]) -> i32 {
             if section == 0 {
                 return usage("section indices are one-based");
             }
-            let g = match gap.as_deref() {
+            let gap = match gap.as_deref() {
                 Some("none") => ttyinv_core::Gap::None,
                 Some("tight") => ttyinv_core::Gap::Tight,
                 Some("standard") => ttyinv_core::Gap::Standard,
                 Some("roomy") => ttyinv_core::Gap::Roomy,
                 _ => return usage("invalid gap"),
             };
-            EditOperation::SetSectionGap {
+            EditOperationInput::SetSectionGap {
                 section: section - 1,
-                gap: g,
+                gap,
             }
         }
         "set-scalar" => {
@@ -1076,42 +1488,77 @@ fn edit_cmd(a: &[String]) -> i32 {
             let Some(value) = value else {
                 return usage("set-scalar requires --value");
             };
-            EditOperation::SetScalar { path, value }
+            EditOperationInput::SetScalar {
+                path: Cow::Owned(path),
+                value: Cow::Owned(value),
+            }
         }
         _ => return usage("unknown edit operation"),
     };
-    let r = apply_edit(EditRequest {
-        source: s.clone(),
-        base_revision: revision(&s),
-        sequence: 1,
+    let format = explicit_format
+        .or_else(|| auto_format(path))
+        .unwrap_or(InputFormat::Markdown);
+    let revision = match execute(InvoiceCommand::Validate {
+        source: borrowed_source_input(&source, format),
+    }) {
+        Ok(CommandOutcome::Validated { revision, .. }) => revision,
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
+        }
+        Err(error) => return source_error_exit(&error, exit::DOCUMENT_INVALID, &source, format),
+    };
+    let original_source = source.clone();
+    let result = execute(InvoiceCommand::Edit {
+        source: source_input(source, format),
+        base_revision: Cow::Owned(revision),
         operation,
     });
-    if json {
-        println!("{}", serde_json::to_string(&r).unwrap_or_default());
-        return if r.conflict || !r.diagnostics.is_empty() {
-            exit::DOCUMENT_INVALID
-        } else {
-            exit::SUCCESS
-        };
-    }
-    if !r.diagnostics.is_empty() {
-        for d in &r.diagnostics {
-            eprintln!("{}: {}", d.code, d.message)
+    let (edited, edited_revision, diagnostics) = match result {
+        Ok(CommandOutcome::Edited {
+            source,
+            revision,
+            diagnostics,
+            ..
+        }) => (source, revision, diagnostics),
+        Ok(_) => {
+            eprintln!("error: executor returned the wrong outcome");
+            return exit::INTERNAL;
         }
-        return exit::DOCUMENT_INVALID;
+        Err(error) => {
+            if json {
+                println!("{}", serde_json::json!({"diagnostics": error.diagnostics}));
+            } else {
+                report_diagnostics(&error.diagnostics);
+            }
+            return command_error_exit(&error, exit::DOCUMENT_INVALID);
+        }
+    };
+    if !stdout && !check && !json && format != InputFormat::Markdown {
+        eprintln!(
+            "error[EDIT005]: in-place edit supports Markdown only; use --stdout or --json for structured input"
+        );
+        return exit::USAGE;
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({"source": edited, "revision": edited_revision, "diagnostics": diagnostics})
+        );
+        return exit::SUCCESS;
     }
     if check {
-        return if r.source == s {
+        return if edited == original_source {
             exit::SUCCESS
         } else {
             exit::DOCUMENT_INVALID
         };
     }
     if stdout {
-        print!("{}", r.source);
+        print!("{edited}");
         return exit::SUCCESS;
     }
-    if ttyinv_core::atomic_write(Path::new(path), &r.source).is_err() {
+    if write_output(Path::new(path), edited.as_bytes(), true).is_err() {
         return exit::OUTPUT;
     }
     exit::SUCCESS

@@ -59,8 +59,9 @@ fn main() {
         "font registry must not be empty"
     );
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
-    let mut generated = String::from("pub struct FontAsset { pub id: &'static str, pub regular: &'static [u8], pub semibold: &'static [u8], pub regular_weight: u16, pub semibold_weight: u16 }\n");
-    generated.push_str("pub const FONT_IDS: &[&str] = &[");
+    let mut generated = String::from(
+        "pub struct FontAsset { pub id: &'static str, pub label: &'static str, pub regular: &'static [u8], pub semibold: &'static [u8], pub regular_weight: u16, pub semibold_weight: u16 }\n",
+    );
     for font in &registry.fonts {
         assert!(!font.label.is_empty(), "font {} label is required", font.id);
         assert!(
@@ -82,13 +83,12 @@ fn main() {
             );
             assert!(!slot.name.is_empty(), "font {} name is required", font.id);
         }
-        generated.push_str(&format!("{},", rust_str(&font.id)));
     }
-    generated.push_str("];\npub const FONT_ASSETS: &[FontAsset] = &[\n");
+    generated.push_str("pub const FONT_ASSETS: &[FontAsset] = &[\n");
     for font in &registry.fonts {
         let regular = copy_asset(&root, &out, &font.id, "regular", &font.regular);
         let semibold = copy_asset(&root, &out, &font.id, "semibold", &font.semibold);
-        generated.push_str(&format!("FontAsset {{ id: {}, regular: include_bytes!({}), semibold: include_bytes!({}), regular_weight: {}, semibold_weight: {} }},\n", rust_str(&font.id), rust_str(&regular), rust_str(&semibold), font.regular.weight, font.semibold.weight));
+        generated.push_str(&format!("FontAsset {{ id: {}, label: {}, regular: include_bytes!({}), semibold: include_bytes!({}), regular_weight: {}, semibold_weight: {} }},\n", rust_str(&font.id), rust_str(&font.label), rust_str(&regular), rust_str(&semibold), font.regular.weight, font.semibold.weight));
     }
     generated.push_str("];\n");
     fs::write(out.join("render_fonts.rs"), generated).expect("write generated font registry");

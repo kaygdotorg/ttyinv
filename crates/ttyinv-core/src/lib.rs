@@ -3,19 +3,23 @@ pub use model::*;
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::fs;
-use std::path::Path;
+mod command;
 mod model;
 mod render;
-pub use render::*;
+pub use command::*;
+pub use render::{
+    PreparedBlock, PreparedImage, PreparedItem, PreparedLink, PreparedNode, PreparedPage,
+    PreparedParty, PreparedPrimitive, PreparedRender, PreparedSemantic, PreparedSpan,
+    PreparedTableRow, PreparedTextRow, Presentation, PresentationAccent, PresentationContent,
+    PresentationFont, PresentationScale, PresentationTokens, RenderFormat, RenderWarning,
+    ThemeTokens, MAX_ASSET_BYTES, MAX_ASSET_TOTAL_BYTES, MAX_PAGES, MAX_PNG_PIXELS,
+    MAX_PNG_TOTAL_PIXELS, MAX_RENDERED_BYTES, PAGE_HEIGHT, PAGE_WIDTH, PREPARED_RENDER_VERSION,
+};
 pub const MAX_SOURCE_BYTES: usize = 128 * 1024;
 pub const MAX_EDIT_BYTES: usize = 128 * 1024;
-pub const SCHEMA_JSON: &str = include_str!("../schema/ttyinv-v2.schema.json");
-pub fn schema_json() -> &'static str {
-    SCHEMA_JSON
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -56,34 +60,23 @@ impl Diagnostic {
     }
 }
 #[derive(Debug, Clone, Serialize)]
-pub struct ValidationReport {
+pub(crate) struct ValidationReport {
     diagnostics: Vec<Diagnostic>,
 }
 impl ValidationReport {
-    pub fn is_valid(&self) -> bool {
-        self.diagnostics
-            .iter()
-            .all(|d| d.severity != Severity::Error)
-    }
-    pub fn diagnostics(&self) -> &[Diagnostic] {
+    pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
-    }
-    pub fn set_path(&mut self, path: impl Into<String>) {
-        let p = path.into();
-        for d in &mut self.diagnostics {
-            d.path = Some(p.clone())
-        }
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct FixedBlock {
+pub(crate) struct FixedBlock {
     pub name: String,
     pub present: bool,
     pub movable: bool,
     pub page_break_before: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ManifestSection {
+pub(crate) struct ManifestSection {
     pub index: usize,
     pub title: String,
     pub body: String,
@@ -92,12 +85,12 @@ pub struct ManifestSection {
     pub summary_only: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct StructureManifest {
+pub(crate) struct StructureManifest {
     pub fixed_blocks: Vec<FixedBlock>,
     pub ordinary_sections: Vec<ManifestSection>,
 }
 impl Document {
-    pub fn structure_manifest(&self) -> StructureManifest {
+    pub(crate) fn structure_manifest(&self) -> StructureManifest {
         StructureManifest {
             fixed_blocks: [
                 ("from", false, true),
@@ -147,177 +140,16 @@ impl Document {
         }
     }
 }
-pub fn structure_manifest(source: &str) -> Result<StructureManifest, ValidationReport> {
-    if source.len() > MAX_SOURCE_BYTES {
-        return Err(ValidationReport {
-            diagnostics: vec![Diagnostic::error(
-                "LIMIT001",
-                "source exceeds source size limit",
-            )],
-        });
-    }
-    match document(source) {
-        Ok(d) => Ok(d.structure_manifest()),
-        Err(_) => {
-            let normalized = normalized_source(source);
-            let (_, body) = split_frontmatter(&normalized, &mut Vec::new());
-            let lines = body.lines().map(str::to_owned).collect::<Vec<_>>();
-            let blocks = scan_blocks(&lines);
-            let mut ordinary_sections = Vec::new();
-            let mut fixed_blocks = ["from", "bill_to", "settlements", "payment", "signature"]
-                .into_iter()
-                .map(|name| FixedBlock {
-                    name: name.into(),
-                    present: false,
-                    movable: false,
-                    page_break_before: false,
-                })
-                .collect::<Vec<_>>();
-            for block in blocks {
-                let title = lines[block.start][3..].trim().to_owned();
-                if let Some(name) = block.fixed {
-                    let key = name.to_lowercase().replace(' ', "_");
-                    if let Some(f) = fixed_blocks.iter_mut().find(|x| x.name == key) {
-                        f.present = true;
-                    }
-                    continue;
-                }
-                let body_lines = &lines[block.start + 1..block.end];
-                let body = if body_lines.iter().any(|x| x.starts_with('|')) {
-                    "table"
-                } else if body_lines.iter().all(|x| x.trim().is_empty()) {
-                    "empty"
-                } else {
-                    "prose"
-                };
-                let mut directives = SectionDirectives::default();
-                for line in &lines[block.directive_start..block.start] {
-                    match parse_directive(line) {
-                        Some(Directive::Gap(g)) => directives.gap = g,
-                        Some(Directive::Page) => directives.page_break_before = true,
-                        Some(Directive::Summary) => directives.summary_only = true,
-                        None => {}
-                    }
-                }
-                ordinary_sections.push(ManifestSection {
-                    index: ordinary_sections.len(),
-                    title,
-                    body: body.into(),
-                    gap: directives.gap,
-                    page_break_before: directives.page_break_before,
-                    summary_only: directives.summary_only,
-                });
-            }
-            Ok(StructureManifest {
-                fixed_blocks,
-                ordinary_sections,
-            })
-        }
-    }
+pub(crate) fn revision(source: &str) -> String {
+    Sha256::digest(source.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut result, byte| {
+            let _ = write!(result, "{byte:02x}");
+            result
+        })
 }
-pub fn revision(source: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(source.as_bytes());
-    h.finish()
-}
-struct Sha256 {
-    state: [u32; 8],
-    block: [u8; 64],
-    len: usize,
-    bits: u64,
-}
-impl Sha256 {
-    fn new() -> Self {
-        Self {
-            state: [
-                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-                0x5be0cd19,
-            ],
-            block: [0; 64],
-            len: 0,
-            bits: 0,
-        }
-    }
-    fn update(&mut self, b: &[u8]) {
-        for x in b {
-            self.block[self.len] = *x;
-            self.len += 1;
-            self.bits += 8;
-            if self.len == 64 {
-                self.compress();
-                self.len = 0
-            }
-        }
-    }
-    fn finish(mut self) -> String {
-        self.block[self.len] = 128;
-        self.len += 1;
-        if self.len > 56 {
-            self.block[self.len..].fill(0);
-            self.compress();
-            self.len = 0
-        }
-        self.block[self.len..56].fill(0);
-        self.block[56..].copy_from_slice(&self.bits.to_be_bytes());
-        self.compress();
-        let mut s = String::new();
-        for x in self.state {
-            let _ = write!(s, "{x:08x}");
-        }
-        s
-    }
-    fn compress(&mut self) {
-        const K: [u32; 64] = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25, 0x59f111f1, 0x923f82a4,
-            0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-            0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-            0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-            0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-            0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-            0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-            0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0c3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-            0xc67178f2,
-        ];
-        let mut w = [0u32; 64];
-        for (i, c) in self.block.chunks_exact(4).take(16).enumerate() {
-            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]])
-        }
-        for i in 16..64 {
-            let a = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let b = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(a)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(b)
-        }
-        let mut a = self.state;
-        for i in 0..64 {
-            let s1 = a[4].rotate_right(6) ^ a[4].rotate_right(11) ^ a[4].rotate_right(25);
-            let ch = (a[4] & a[5]) ^ ((!a[4]) & a[6]);
-            let t1 = a[7]
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a[0].rotate_right(2) ^ a[0].rotate_right(13) ^ a[0].rotate_right(22);
-            let maj = (a[0] & a[1]) ^ (a[0] & a[2]) ^ (a[1] & a[2]);
-            let t2 = s0.wrapping_add(maj);
-            a = [
-                t1.wrapping_add(t2),
-                a[0],
-                a[1],
-                a[2],
-                a[3].wrapping_add(t1),
-                a[4],
-                a[5],
-                a[6],
-            ]
-        }
-        for (i, x) in self.state.iter_mut().enumerate() {
-            *x = x.wrapping_add(a[i])
-        }
-    }
+pub(crate) fn sha256_digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ScannedBlock {
@@ -470,7 +302,7 @@ fn invalid_appearance_config(raw: &serde_yaml::Value) -> bool {
             .get(string_key("frame-inset"))
             .is_some_and(|value| serde_yaml::from_value::<FrameInset>(value.clone()).is_err())
 }
-pub fn document(source: &str) -> Result<Document, ValidationReport> {
+pub(crate) fn document(source: &str) -> Result<Document, ValidationReport> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(ValidationReport {
             diagnostics: vec![Diagnostic::error(
@@ -1117,7 +949,7 @@ fn validate_settlements(t: &Table, e: &mut Vec<Diagnostic>) {
         }
     }
 }
-pub fn currency_exponent(currency: &str) -> u32 {
+fn currency_exponent(currency: &str) -> u32 {
     match currency {
         "BHD" | "IQD" | "JOD" | "KWD" | "LYD" | "OMR" | "TND" => 3,
         "BIF" | "CLP" | "DJF" | "GNF" | "ISK" | "JPY" | "KMF" | "KRW" | "PYG" | "RWF" | "UGX"
@@ -1151,7 +983,10 @@ fn matches_amount_header(value: &str, aliases: &[&str]) -> bool {
     })
 }
 
-fn payable_amount_column(headings: &[String], currency: &str) -> Result<Option<usize>, ()> {
+pub(crate) fn payable_amount_column(
+    headings: &[String],
+    currency: &str,
+) -> Result<Option<usize>, ()> {
     let amount_aliases = ["amount", "total"];
     let mut candidates = Vec::new();
     let mut payable = Vec::new();
@@ -1528,7 +1363,7 @@ fn parse_directive(s: &str) -> Option<Directive> {
         _ => None,
     }
 }
-pub fn validate(s: &str) -> ValidationReport {
+pub(crate) fn validate(s: &str) -> ValidationReport {
     match document(s) {
         Ok(_) => ValidationReport {
             diagnostics: vec![],
@@ -1554,7 +1389,7 @@ fn escape_table_cell(value: &str) -> String {
         .replace('\r', "")
         .replace('\n', "<br>")
 }
-pub fn serialize_markdown(d: &Document) -> String {
+pub(crate) fn serialize_markdown(d: &Document) -> String {
     let accent = d
         .config
         .accent
@@ -1734,7 +1569,7 @@ fn yaml_contains_null(value: &serde_yaml::Value) -> bool {
     }
 }
 
-pub fn parse_json(x: &str) -> Result<Document, serde_json::Error> {
+pub(crate) fn parse_json(x: &str) -> Result<Document, serde_json::Error> {
     let raw: serde_json::Value = serde_json::from_str(x)?;
     if json_contains_null(&raw) {
         return Err(serde_json::Error::io(std::io::Error::new(
@@ -1748,13 +1583,13 @@ pub fn parse_json(x: &str) -> Result<Document, serde_json::Error> {
     })?;
     Ok(d)
 }
-pub fn to_json(d: &Document) -> Result<String, serde_json::Error> {
+pub(crate) fn to_json(d: &Document) -> Result<String, serde_json::Error> {
     validate_model(d).map_err(|m| {
         serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, m))
     })?;
     serde_json::to_string_pretty(d)
 }
-pub fn parse_yaml(x: &str) -> Result<Document, serde_yaml::Error> {
+pub(crate) fn parse_yaml(x: &str) -> Result<Document, serde_yaml::Error> {
     let raw: serde_yaml::Value = serde_yaml::from_str(x)?;
     if yaml_contains_null(&raw) {
         return Err(serde_yaml::Error::custom(
@@ -1765,33 +1600,33 @@ pub fn parse_yaml(x: &str) -> Result<Document, serde_yaml::Error> {
     validate_model(&d).map_err(serde_yaml::Error::custom)?;
     Ok(d)
 }
-pub fn to_yaml(d: &Document) -> Result<String, serde_yaml::Error> {
+pub(crate) fn to_yaml(d: &Document) -> Result<String, serde_yaml::Error> {
     validate_model(d).map_err(serde_yaml::Error::custom)?;
     serde_yaml::to_string(d)
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum EditOperation {
+pub(crate) enum EditOperation {
     SetScalar { path: String, value: String },
     MoveSection { from: usize, to: usize },
     SetSectionGap { section: usize, gap: Gap },
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EditRequest {
+pub(crate) struct EditRequest {
     pub source: String,
     pub base_revision: String,
     pub sequence: u64,
     pub operation: EditOperation,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EditResponse {
+pub(crate) struct EditResponse {
     pub source: String,
     pub revision: String,
     pub sequence: u64,
     pub diagnostics: Vec<Diagnostic>,
     pub conflict: bool,
 }
-pub fn apply_edit(r: EditRequest) -> EditResponse {
+pub(crate) fn apply_edit(r: EditRequest) -> EditResponse {
     let rev = revision(&r.source);
     if r.source.len() > MAX_EDIT_BYTES {
         return EditResponse {
@@ -2339,42 +2174,20 @@ fn replace_table_cell(
     }
     Err(Diagnostic::error("EDIT004", "table cell is absent"))
 }
-pub fn atomic_write(path: &Path, source: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .and_then(|x| x.to_str())
-        .unwrap_or("invoice");
-    for _ in 0..100 {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let tmp = parent.join(format!(".{name}.ttyinv.{}.{}", std::process::id(), id));
-        let Ok(mut f) = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        else {
-            continue;
-        };
-        if f.write_all(source.as_bytes())
-            .and_then(|_| f.sync_all())
-            .is_err()
-        {
-            let _ = fs::remove_file(&tmp);
-            return Err(std::io::Error::other("temporary write failed"));
-        }
-        match fs::rename(&tmp, path) {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                let _ = fs::remove_file(&tmp);
-                return Err(err);
-            }
-        }
+
+#[cfg(test)]
+mod hash_tests {
+    use super::sha256_digest;
+
+    #[test]
+    fn sha256_known_answer_vector() {
+        assert_eq!(
+            sha256_digest(b"abc"),
+            [
+                0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+                0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+                0xf2, 0x00, 0x15, 0xad
+            ]
+        );
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        "unable to create exclusive temporary file",
-    ))
 }

@@ -2,8 +2,14 @@
 
 Status: **v2**
 
-This specification defines the content-first Markdown format. The Rust core is the one
-parser and source editor. Adapters use the same typed `Document` model.
+This specification defines the content-first Markdown format and its shared command
+executor. The Rust core exposes one domain seam:
+
+```rust
+pub fn execute(command: InvoiceCommand<'_>) -> Result<CommandOutcome, CommandError>;
+```
+
+CLI and WASM perform only transport, filesystem, and bounded-input work around `execute`.
 
 ## Document grammar
 
@@ -59,18 +65,23 @@ Frontmatter contains only these keys:
 - `density` defaults to `comfortable`.
 - `accent` is optional. It must be lowercase `#rrggbb`; absent uses the theme accent.
 - `font-scale` defaults to `100` and accepts integer percentages from `100` to `140`.
-- `frame-inset` defaults to `54` and accepts integer layout units from `30` to `60`.
+- `frame-inset` defaults to `54` and accepts integer A4 layout units from `30` to `60`. The content gutters are 11.57 units horizontally, 23.14 units above, and 17.35 units below.
 
 The UI may offer font-scale steps of five, but parsers accept every integer in range.
 `font-weight` controls the base text weight. Semantic headings and strong text remain
 semibold. The core renderer resolves these values into one immutable layout plan.
 
-The public `ttyinv-core::render` interface accepts source text and typed `RenderOptions`.
-It returns owned bytes with MIME type, extension, page count, dimensions, and warnings.
-Supported output formats are self-contained HTML, PDF, and PNG. Rendering never fetches
-external assets. Images must be validated base64 image data URLs within the strict
-renderer asset limit. Invalid documents, options, assets, and oversize output return
-typed render errors.
+Rendering is an executor command. `PrepareRender` returns a versioned, serializable,
+source-free `PreparedRender` plan for preview and inspection. Plans are never accepted
+as `Render` input. `Render` always accepts the original typed source and options, then
+prepares and encodes through the same bounded pipeline for HTML, PDF, or PNG. Render
+outcomes include the source revision, plan digest, dimensions, warnings, output bytes,
+and output hash.
+- `png-scale` is a render option for PNG output. It accepts `1` or `2`; omitted defaults
+  to `1`. Scale doubles raster dimensions without changing logical A4 geometry.
+Rendering never fetches external assets. Images must be bounded asset bytes supplied by
+the adapter and validated by the executor. Invalid documents, options, assets, and
+oversize output return typed `CommandError` values.
 
 Formats are `code-comma-dot`, `code-dot-comma`, `code-space-comma`, `code-indian`,
 and `code-plain`. Themes are `printable`, `paper-white`, `graphite`, `blueprint`,
@@ -88,6 +99,7 @@ label at most once, in any order. The canonical serializer uses this order: `Num
 `Number`, `Issued`, and `Currency` are required. `Kind` defaults to `standard`. `Due`
 and `Terms` are optional. Dates are real Gregorian `YYYY-MM-DD` dates. Due cannot be
 before Issued. Currency is three uppercase ASCII letters.
+- Rendered money values use the ISO 4217 currency code, a no-break space (`U+00A0`), and the formatted amount.
 
 ## Parties
 

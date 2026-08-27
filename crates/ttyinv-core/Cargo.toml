@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Canonical invoice parsing, editing, validation, and rendering engine"
 
 [dependencies]
 pulldown-cmark.workspace = true
@@ -17,6 +18,7 @@ rustybuzz = "0.20.1"
 fontdue = "0.9"
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+sha2 = "0.10"
 
 [build-dependencies]
 serde.workspace = true

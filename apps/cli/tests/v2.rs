@@ -238,6 +238,87 @@ fn adapters_require_known_input_or_explicit_from_and_help_is_available() {
 
     let _ = fs::remove_file(unknown);
 }
+#[test]
+fn inspect_modes_sections_shape_and_edit_input_contract() {
+    let root = std::env::temp_dir().join(format!("ttyinv-v2-contract-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+
+    let extensionless = root.join("invoice");
+    fs::write(&extensionless, SOURCE).unwrap();
+    let edited = run(&[
+        "edit",
+        "set-gap",
+        extensionless.to_str().unwrap(),
+        "--section",
+        "1",
+        "--gap",
+        "roomy",
+    ]);
+    assert!(edited.status.success(), "{edited:?}");
+    assert!(fs::read_to_string(&extensionless)
+        .unwrap()
+        .contains("gap-before roomy"));
+
+    let json_path = root.join("invoice.json");
+    let converted = run(&[
+        "convert",
+        extensionless.to_str().unwrap(),
+        "--to",
+        "json",
+        "--output",
+        json_path.to_str().unwrap(),
+    ]);
+    assert!(converted.status.success(), "{converted:?}");
+    let original_json = fs::read_to_string(&json_path).unwrap();
+    let refused = run(&[
+        "edit",
+        "set-gap",
+        json_path.to_str().unwrap(),
+        "--section",
+        "1",
+        "--gap",
+        "tight",
+    ]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("EDIT005"));
+    assert_eq!(fs::read_to_string(&json_path).unwrap(), original_json);
+
+    let sections = run(&["sections", extensionless.to_str().unwrap()]);
+    assert!(sections.status.success());
+    assert!(String::from_utf8_lossy(&sections.stdout)
+        .lines()
+        .any(|line| line.contains('\t') && line.contains("Contract fees")));
+    let sections_json = run(&["sections", extensionless.to_str().unwrap(), "--json"]);
+    assert!(sections_json.status.success());
+    let manifest: serde_json::Value = serde_json::from_slice(&sections_json.stdout).unwrap();
+    assert!(manifest["fixed_blocks"].is_array());
+    assert!(manifest["ordinary_sections"].is_array());
+    assert_eq!(manifest["ordinary_sections"][0]["title"], "Contract fees");
+
+    for mode in ["structure", "summary", "manifest"] {
+        let output = run(&[
+            "inspect",
+            extensionless.to_str().unwrap(),
+            "--mode",
+            mode,
+            "--json",
+        ]);
+        assert!(output.status.success(), "inspect {mode}: {output:?}");
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["mode"], mode);
+        assert!(!value[mode].is_null());
+    }
+
+    let malformed = root.join("bad.json");
+    fs::write(&malformed, "{").unwrap();
+    let malformed_output = run(&["validate", malformed.to_str().unwrap()]);
+    assert_eq!(malformed_output.status.code(), Some(3));
+    let invalid = root.join("invalid.json");
+    fs::write(&invalid, "{}").unwrap();
+    let invalid_output = run(&["validate", invalid.to_str().unwrap()]);
+    assert_eq!(invalid_output.status.code(), Some(1));
+    let _ = fs::remove_dir_all(root);
+}
 
 #[test]
 fn render_writes_requested_formats_and_rejects_ambiguous_output() {
@@ -331,6 +412,122 @@ fn render_refuses_symlink_output_without_force() {
     let _ = fs::remove_file(&output);
     let _ = fs::remove_file(&target);
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn render_reports_png_scale_reductions_on_stderr() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-png-scale-warning-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("invoice.md");
+    let output = root.join("invoice.png");
+    fs::write(
+        &input,
+        include_str!("../../../render-compat/10-multi-page-500.md"),
+    )
+    .unwrap();
+    let rendered = run(&[
+        "render",
+        input.to_str().unwrap(),
+        "--format",
+        "png",
+        "--png-scale",
+        "2",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert!(
+        rendered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&rendered.stderr);
+    assert!(stderr.contains("warning[PNG_SCALE_REDUCED]"));
+    assert!(stderr.contains("requested scale 2"));
+    assert!(stderr.contains("actual scale 1"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn render_rejects_fifo_assets_without_blocking() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-assets-fifo-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("invoice.md");
+    let output = root.join("invoice.html");
+    let fifo = root.join("logo.png");
+    assert!(Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap()
+        .success());
+    let source = SOURCE.replace(
+        "## From\n\n- Name: Northstar Studio",
+        "## From\n\n![Logo](logo.png)\n\n- Name: Northstar Studio",
+    );
+    fs::write(&input, source).unwrap();
+    let rendered = Command::new("timeout")
+        .arg("5s")
+        .arg(env!("CARGO_BIN_EXE_ttyinv"))
+        .args([
+            "render",
+            input.to_str().unwrap(),
+            "--format",
+            "html",
+            "--output",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(rendered.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&rendered.stderr).contains("not a regular file"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn render_rejects_directory_assets_as_nonregular_files() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-assets-directory-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("invoice.md");
+    let output = root.join("invoice.html");
+    fs::create_dir(root.join("logo.png")).unwrap();
+    let source = SOURCE.replace(
+        "## From\n\n- Name: Northstar Studio",
+        "## From\n\n![Logo](logo.png)\n\n- Name: Northstar Studio",
+    );
+    fs::write(&input, source).unwrap();
+    let rendered = run(&[
+        "render",
+        input.to_str().unwrap(),
+        "--format",
+        "html",
+        "--output",
+        output.to_str().unwrap(),
+    ]);
+    assert_eq!(rendered.status.code(), Some(5));
+    assert!(String::from_utf8_lossy(&rendered.stderr).contains("not a regular file"));
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -548,4 +745,80 @@ fn render_stdin_rejects_relative_images_without_an_asset_base() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("--asset-base"));
     let _ = fs::remove_file(input);
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn executor_commands_are_reachable_from_cli() {
+    let root = std::env::temp_dir().join(format!("ttyinv-v2-executor-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("invoice.md");
+    fs::write(&input, SOURCE).unwrap();
+
+    for mode in ["summary", "structure", "manifest"] {
+        let out = run(&["inspect", input.to_str().unwrap(), "--mode", mode, "--json"]);
+        assert!(out.status.success(), "inspect {mode}: {:?}", out);
+    }
+
+    let registry = run(&["registry"]);
+    assert!(registry.status.success());
+    assert!(String::from_utf8_lossy(&registry.stdout).contains("prepare_render"));
+    let schema = run(&["schema"]);
+    assert!(schema.status.success());
+    assert!(String::from_utf8_lossy(&schema.stdout).contains("ttyinv/v2"));
+
+    let presentation = run(&["resolve-presentation"]);
+    assert!(presentation.status.success());
+    assert!(String::from_utf8_lossy(&presentation.stdout).contains("geometry"));
+
+    let draft = root.join("draft.json");
+    fs::write(
+        &draft,
+        r#"{"title":"Created invoice","metadata":{"number":"INV-2026-001","issued":"2026-01-01","currency":"EUR"},"from":{"name":"Northstar Studio"},"bill_to":{"name":"Acme Research Ltd"}}"#,
+    )
+    .unwrap();
+    let created = run(&["create", draft.to_str().unwrap(), "--stdout"]);
+    assert!(created.status.success(), "{:?}", created);
+    assert!(String::from_utf8_lossy(&created.stdout).contains("# Created invoice"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn cli_adapter_has_no_operation_specific_core_calls() {
+    const MAIN: &str = include_str!("../src/main.rs");
+    for helper in [
+        "document(",
+        "validate(",
+        "parse_json(",
+        "parse_yaml(",
+        "serialize_markdown(",
+        "revision(",
+        "apply_edit(",
+        "render_document(",
+        "presentation(",
+        "schema_json(",
+        "to_json(",
+        "to_yaml(",
+        "atomic_write(",
+    ] {
+        assert!(
+            !MAIN.contains(helper),
+            "legacy helper call remains: {helper}"
+        );
+    }
+    for command in [
+        "Create",
+        "Validate",
+        "Inspect",
+        "Convert",
+        "Edit",
+        "PrepareRender",
+        "Render",
+        "ResolvePresentation",
+        "Registry",
+    ] {
+        assert!(
+            MAIN.contains(&format!("execute(InvoiceCommand::{command}")),
+            "missing executor call for {command}"
+        );
+    }
 }

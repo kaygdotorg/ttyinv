@@ -21,6 +21,10 @@ format:
 schema:
 	$(NIX_RUST) cargo run -q -p ttyinv-cli -- schema --output /tmp/ttyinv-v2.schema.json
 	diff -u schema/ttyinv-v2.schema.json /tmp/ttyinv-v2.schema.json
+	$(NIX_RUST) cargo run -q -p ttyinv-cli -- registry > /tmp/ttyinv-command-registry.json
+	diff -u schema/ttyinv-command-registry.json /tmp/ttyinv-command-registry.json
+	jq -r '.command_schema' /tmp/ttyinv-command-registry.json > /tmp/ttyinv-command.schema.json
+	diff -u schema/ttyinv-command.schema.json /tmp/ttyinv-command.schema.json
 
 check: test rust-check format schema
 

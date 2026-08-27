@@ -1,12 +1,8 @@
 # Privacy
 
-The public repository contains only Rust source, fabricated v2 examples, and reviewed
-font assets. It does not require invoice content, credentials, or personal data.
+This repository follows the hosted privacy and data-flow policy at
+[ttyinv.com/docs/api/authentication](https://ttyinv.com/docs/api/authentication).
 
-Do not commit real invoices, customer names, addresses, bank details, signatures, image
-files, private keys, environment files, or access tokens. Use `example.com` identities in
-fixtures.
-
-The Rust CLI reads the source path supplied by its caller. The core does not fetch remote
-images, links, fonts, or scripts. The WASM adapter processes source in memory and returns
-structured diagnostics and edit responses.
+Public fixtures use fabricated identities and `example.com` addresses. Never commit real
+invoices, personal data, credentials, private keys, generated output, or unreviewed font
+assets.
