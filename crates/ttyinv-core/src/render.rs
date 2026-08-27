@@ -784,6 +784,7 @@ struct Resolved {
     font_scale: u8,
     density_space: f32,
     png_scale: u8,
+    /// Body line advance used by flow sizing; each text primitive carries its own line box.
     line_advance: f32,
     frame_inset: u8,
     upem: f32,
@@ -919,6 +920,7 @@ pub struct PreparedRender {
     #[serde(serialize_with = "canonical_float::serialize")]
     pub density_space: f32,
     pub png_scale: u8,
+    /// Document-wide body advance for flow sizing; paint consumers use text primitive `line`.
     #[serde(serialize_with = "canonical_float::serialize")]
     pub line_advance: f32,
     #[serde(serialize_with = "canonical_float::serialize")]
@@ -1099,6 +1101,8 @@ pub enum PreparedPrimitive {
         #[serde(serialize_with = "canonical_float::serialize")]
         baseline: f32,
         #[serde(serialize_with = "canonical_float::serialize")]
+        line: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         size: f32,
         align: String,
         #[serde(serialize_with = "canonical_float::serialize")]
@@ -1200,6 +1204,7 @@ enum Primitive {
     Text {
         x: f32,
         baseline: f32,
+        line: f32,
         size: f32,
         align: Align,
         advance: f32,
@@ -1415,6 +1420,7 @@ impl PreparedRender {
                                 Primitive::Text {
                                     x,
                                     baseline,
+                                    line,
                                     size,
                                     align,
                                     advance,
@@ -1424,6 +1430,7 @@ impl PreparedRender {
                                 } => PreparedPrimitive::Text {
                                     x: *x,
                                     baseline: *baseline,
+                                    line: *line,
                                     size: *size,
                                     align: align_name(*align).into(),
                                     advance: *advance,
@@ -1791,6 +1798,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
                         PreparedPrimitive::Text {
                             x,
                             baseline,
+                            line,
                             size,
                             align,
                             advance,
@@ -1799,6 +1807,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
                         } => Primitive::Text {
                             x: *x,
                             baseline: *baseline,
+                            line: *line,
                             size: *size,
                             align: parse_align(align)?,
                             advance: *advance,
@@ -2170,7 +2179,7 @@ fn resolve(c: &Config, o: RenderOptions) -> Result<Resolved, RenderError> {
         font_scale,
         density_space,
         png_scale,
-        line_advance: 12.06 * f32::from(font_scale) / 100.0,
+        line_advance: 12.065277 * f32::from(font_scale) / 100.0,
         frame_inset,
         upem,
         ascender,
@@ -2900,6 +2909,7 @@ fn push_text_impl(
         primitive: Primitive::Text {
             x: pen,
             baseline: baseline_from_top(r, placement.y, placement.size, placement.line),
+            line: placement.line,
             size: placement.size,
             align: Align::Left,
             advance,
@@ -3045,6 +3055,7 @@ fn push_wrapped_text_impl(
                         placement.size,
                         placement.line,
                     ),
+                    line: placement.line,
                     size: placement.size,
                     align: Align::Left,
                     advance: r.advance * placement.size / r.upem,
@@ -3216,6 +3227,7 @@ fn push_notch(page: &mut DisplayPage, r: &Resolved, title: &str, x: f32, y: f32)
         primitive: Primitive::Text {
             x,
             baseline: baseline_on_rule(r, y, size),
+            line,
             size,
             align: Align::Left,
             advance,
@@ -3373,9 +3385,11 @@ fn build_positioned(
     let right = g.page_w - inset - g.gutter_x;
     let width = right - left;
     let content_top = inset + g.gutter_top;
-    let body = g.font_body * f32::from(r.font_scale) / 100.0;
-    let heading = g.font_heading * f32::from(r.font_scale) / 100.0;
-    let detail = g.font_detail * f32::from(r.font_scale) / 100.0;
+    let type_scale = f32::from(r.font_scale) / 100.0;
+    let body = g.font_body * type_scale;
+    let heading = g.font_heading * type_scale;
+    let detail = g.font_detail * type_scale;
+    let detail_line = g.line_detail * type_scale;
     let payable_sections = doc
         .ordinary_sections
         .iter()
@@ -3466,9 +3480,14 @@ fn build_positioned(
             let brand_lines =
                 ((measure_text(&doc.from.name, r, heading, true) / brand_width).ceil() as usize)
                     .max(1);
+            // The legacy sheet uses a unitless 1.12 heading line-height. Keep
+            // that line box coupled to the scaled heading size; using the
+            // canonical 100% token here compresses wrapped titles at larger
+            // font scales and lets them collide with the following content.
+            let heading_line = g.line_heading * type_scale;
             let header_content = (heading * 1.12)
                 .max(meta_content)
-                .max(brand_lines as f32 * g.line_heading);
+                .max(brand_lines as f32 * heading_line);
             let header_h = g
                 .header_min_h
                 .max(g.header_pad_top + header_content + g.header_pad_bottom);
@@ -3531,7 +3550,7 @@ fn build_positioned(
                 header_top,
                 brand_width,
                 heading,
-                g.line_heading,
+                heading_line,
                 r.tokens.ink,
                 Face::Semibold,
                 Align::Left,
@@ -3633,7 +3652,7 @@ fn build_positioned(
                             px,
                             py,
                             detail,
-                            g.line_detail,
+                            detail_line,
                             r.tokens.muted,
                             Face::Regular,
                             Align::Left,
@@ -3644,7 +3663,7 @@ fn build_positioned(
                             image_alt_start,
                             Some(format!("{party_root}.logo.alt")),
                         );
-                        py += g.line_detail + g.logo_gap;
+                        py += detail_line + g.logo_gap * r.density_space;
                     }
                 }
                 for (address_index, address) in party.address.iter().enumerate() {
@@ -4150,14 +4169,14 @@ fn build_positioned(
                             left,
                             y,
                             detail,
-                            g.line_detail,
+                            detail_line,
                             r.tokens.muted,
                             Face::Regular,
                             Align::Left,
                             0.0,
                         );
                         mark_text_items(&mut page, alt_start, Some("signature.image.alt".into()));
-                        y += g.line_detail + g.sig_note_gap * r.density_space;
+                        y += detail_line + g.sig_note_gap * r.density_space;
                     }
                     y += f32::from(*gap) * r.line_advance;
                 }
@@ -5182,9 +5201,9 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                 Primitive::Rule { x, y, w, color, .. } => o.push_str(&format!(
                     "<div class=\"primitive rule\" style=\"left:{x}px;top:{y}px;width:{w}px;color:{}\"></div>",
                     color_hex(*color))),
-                Primitive::Text { x, baseline, size, tracking, spans, .. } => {
-                    let top = *baseline - html_baseline_offset(r, *size, r.line_advance);
-                    o.push_str(&format!("<div class=\"primitive\" style=\"left:{x}px;top:{top}px;font-size:{size}px;letter-spacing:{tracking}px\">"));
+                Primitive::Text { x, baseline, line, size, tracking, spans, .. } => {
+                    let top = *baseline - html_baseline_offset(r, *size, *line);
+                    o.push_str(&format!("<div class=\"primitive\" style=\"left:{x}px;top:{top}px;font-size:{size}px;line-height:{line}px;letter-spacing:{tracking}px\">"));
                     for span in spans {
                         let tag = if span.href.is_some() { "a" } else if span.face == Face::Semibold { "strong" } else { "span" };
                         let href = span.href.as_ref().map(|v| format!(" href=\"{}\"", esc(v))).unwrap_or_default();
@@ -6275,7 +6294,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(plan.resolved.line_advance, 12.06);
+        assert!((plan.resolved.line_advance - 12.065277).abs() < 0.00001);
         let (_, width, height) = encode_png(&plan).unwrap();
         assert_eq!(width, PAGE_WIDTH);
         assert_eq!(height, PAGE_HEIGHT * plan.pages.len() as u32);
@@ -6459,7 +6478,120 @@ mod tests {
             .bytes,
         )
         .unwrap();
-        assert!(html.contains(".primitive{position:absolute;white-space:pre;line-height:12.06px}"));
+        assert!(
+            html.contains(".primitive{position:absolute;white-space:pre;line-height:12.065277px}")
+        );
+    }
+    #[test]
+    fn scaled_heading_line_boxes_follow_scaled_type() {
+        let doc = document(include_str!(
+            "../../../render-compat/02-long-title-address.md"
+        ))
+        .unwrap();
+        for scale in [100, 120, 140] {
+            let plan = layout(
+                &doc,
+                resolve(
+                    &doc.config,
+                    RenderOptions {
+                        format: RenderFormat::Html,
+                        font_scale: Some(scale),
+                        ..Default::default()
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let baselines = plan.positioned[0]
+                .items
+                .iter()
+                .filter_map(|item| match &item.primitive {
+                    Primitive::Text {
+                        edit_path: Some(path),
+                        baseline,
+                        ..
+                    } if path == "title" => Some(*baseline),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(baselines.len() > 1);
+            let expected = Geometry::canonical().line_heading * f32::from(scale) / 100.0;
+            for pair in baselines.windows(2) {
+                assert!((pair[1] - pair[0] - expected).abs() < 0.0001);
+            }
+        }
+    }
+    #[test]
+    fn every_text_kind_carries_its_scaled_line_box() {
+        let heading_source = include_str!("../../../render-compat/02-long-title-address.md");
+        let detail_source = include_str!("../../../render-compat/09-signature-image.md");
+        for scale in [100, 140] {
+            let heading_doc = document(heading_source).unwrap();
+            let heading_plan = prepare_render(
+                &heading_doc,
+                RenderOptions {
+                    format: RenderFormat::Html,
+                    font_scale: Some(scale),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let title = heading_plan.pages[0]
+                .items
+                .iter()
+                .find_map(|item| match (&item.edit_path, &item.primitive) {
+                    (Some(path), PreparedPrimitive::Text { line, .. }) if path == "title" => {
+                        Some(*line)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let body = heading_plan.pages[0]
+                .items
+                .iter()
+                .find_map(|item| match (&item.edit_path, &item.primitive) {
+                    (Some(path), PreparedPrimitive::Text { line, .. })
+                        if path.starts_with("sections[") =>
+                    {
+                        Some(*line)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!((title - 15.74 * f32::from(scale) / 100.0).abs() < 0.0001);
+            assert!((body - 12.065277 * f32::from(scale) / 100.0).abs() < 0.0001);
+            let heading_html =
+                String::from_utf8(render_prepared(&heading_plan).unwrap().bytes).unwrap();
+            assert!(heading_html.contains(&format!("line-height:{title}px")));
+            assert!(heading_html.contains(&format!("line-height:{body}px")));
+
+            let detail_doc = document(detail_source).unwrap();
+            let detail_plan = prepare_render(
+                &detail_doc,
+                RenderOptions {
+                    format: RenderFormat::Html,
+                    font_scale: Some(scale),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let detail = detail_plan.pages[1]
+                .items
+                .iter()
+                .find_map(|item| match (&item.edit_path, &item.primitive) {
+                    (Some(path), PreparedPrimitive::Text { line, .. })
+                        if path == "signature.image.alt" =>
+                    {
+                        Some(*line)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!((detail - 9.65 * f32::from(scale) / 100.0).abs() < 0.0001);
+            let detail_html =
+                String::from_utf8(render_prepared(&detail_plan).unwrap().bytes).unwrap();
+            assert!(detail_html.contains(&format!("line-height:{detail}px")));
+        }
     }
 
     #[test]
@@ -6801,6 +6933,7 @@ mod tests {
         assert!(!json.contains("\"slant\":\"Oblique\""));
         assert!(!json.contains("\"align\":\"Left\""));
         assert!(json.contains("\"dash\":\"dashed\"") || !json.contains("\"dash\":"));
+        assert!(json.contains("\"line\":"));
         assert!(json.contains("\"semantic\""));
         assert!(json.len() < MAX_RENDERED_BYTES);
     }
