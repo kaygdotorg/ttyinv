@@ -1231,6 +1231,19 @@ fn outcome_schema() -> serde_json::Value {
         &["theme", "font", "font_weight", "density", "accent", "font_scale", "frame_inset"],
         serde_json::json!({"theme":{"type":"string"},"font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"density":{"type":"string"},"accent":{"type":["string","null"]},"font_scale":{"type":"integer","minimum":100,"maximum":140},"frame_inset":{"type":"integer","minimum":30,"maximum":60}}),
     ));
+    defs.insert(
+        "command_descriptor".into(),
+        object(
+            &["id", "description", "input_schema", "output_schema", "limits", "formats", "adapters", "errors", "retry"],
+            serde_json::json!({
+                "id":{"type":"string"},"description":{"type":"string"},"input_schema":{"type":"string"},
+                "output_schema":{"type":"string"},"limits":{"type":"array","items":{"type":"string"}},
+                "formats":{"type":"array","items":{"type":"string"}},"adapters":{"type":"array","items":{"type":"string"}},
+                "errors":{"type":"array","items":{"enum":["invalid_request","limit","invalid_document","conflict","unsupported","invalid_asset","encoding","font","backend"]}},
+                "retry":{"enum":["never","after_input_change","later"]}
+            }),
+        ),
+    );
     defs.insert("capabilities".into(), serde_json::json!({
         "type":"object","additionalProperties":false,"required":["version","commands","limits","presentation"],
         "properties":{
