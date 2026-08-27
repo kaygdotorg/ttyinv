@@ -9,8 +9,128 @@ use crate::{
     Image, LabelValue, Metadata, Party, Payment, PreparedRender, RenderFormat, RenderWarning,
     SectionBody, SectionDirectives, Signature, Table, TableAlignment,
 };
-use serde::{Deserialize, Serialize};
+use serde::de::{self, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::borrow::Cow;
+
+fn base64_digit(value: u8) -> Option<u8> {
+    match value {
+        b'A'..=b'Z' => Some(value - b'A'),
+        b'a'..=b'z' => Some(value - b'a' + 26),
+        b'0'..=b'9' => Some(value - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decode_asset_base64(value: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if value.is_empty() || value.len() % 4 != 0 {
+        return Err("base64 asset bytes must use canonical padding");
+    }
+    let mut output = Vec::with_capacity(value.len() / 4 * 3);
+    for (chunk_index, chunk) in value.chunks_exact(4).enumerate() {
+        let last = chunk_index + 1 == value.len() / 4;
+        let first =
+            base64_digit(chunk[0]).ok_or("base64 asset bytes contain an invalid character")?;
+        let second =
+            base64_digit(chunk[1]).ok_or("base64 asset bytes contain an invalid character")?;
+        if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' || second & 0x0f != 0 {
+                return Err("base64 asset bytes contain invalid padding");
+            }
+            output.push((first << 2) | (second >> 4));
+            continue;
+        }
+        let third =
+            base64_digit(chunk[2]).ok_or("base64 asset bytes contain an invalid character")?;
+        output.push((first << 2) | (second >> 4));
+        output.push((second << 4) | (third >> 2));
+        if chunk[3] == b'=' {
+            if !last || third & 0x03 != 0 {
+                return Err("base64 asset bytes contain invalid padding");
+            }
+        } else {
+            let fourth =
+                base64_digit(chunk[3]).ok_or("base64 asset bytes contain an invalid character")?;
+            output.push((third << 6) | fourth);
+        }
+    }
+    Ok(output)
+}
+
+fn deserialize_asset_bytes<'de, D>(deserializer: D) -> Result<Bytes<'static>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct AssetBytesVisitor;
+
+    impl<'de> Visitor<'de> for AssetBytesVisitor {
+        type Value = Bytes<'static>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a Uint8Array, base64 string, or sequence of bytes")
+        }
+
+        fn visit_borrowed_bytes<E>(self, value: &'de [u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            decode_asset_base64(value)
+                .map(Cow::Owned)
+                .map_err(E::custom)
+        }
+
+        fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value.is_ascii() {
+                decode_asset_base64(value)
+                    .map(Cow::Owned)
+                    .map_err(E::custom)
+            } else {
+                Ok(Cow::Owned(value.to_vec()))
+            }
+        }
+
+        fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Cow::Owned(value))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            decode_asset_base64(value.as_bytes())
+                .map(Cow::Owned)
+                .map_err(E::custom)
+        }
+
+        fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&value)
+        }
+
+        fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0));
+            while let Some(value) = sequence.next_element::<u8>()? {
+                bytes.push(value);
+            }
+            Ok(Cow::Owned(bytes))
+        }
+    }
+
+    deserializer.deserialize_any(AssetBytesVisitor)
+}
 
 pub type Text<'a> = Cow<'a, str>;
 pub type Bytes<'a> = Cow<'a, [u8]>;
@@ -39,16 +159,17 @@ pub enum InspectMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "'a: 'de"))]
 pub struct RenderAssetInput<'a> {
     pub source: Text<'a>,
+    #[serde(deserialize_with = "deserialize_asset_bytes")]
     pub bytes: Bytes<'a>,
     #[serde(default)]
     pub mime: Option<Text<'a>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, bound(deserialize = "'a: 'de"))]
 pub struct RenderOptionsInput<'a> {
     pub format: RenderFormat,
     #[serde(default)]
@@ -197,6 +318,8 @@ pub struct DraftConfig<'a> {
     #[serde(default)]
     pub accent: Option<Text<'a>>,
     #[serde(default)]
+    pub amount_in_words: Option<bool>,
+    #[serde(default)]
     pub font_scale: Option<u8>,
     #[serde(default)]
     pub frame_inset: Option<u8>,
@@ -214,6 +337,7 @@ impl<'a> Default for DraftConfig<'a> {
             font_weight: None,
             density: None,
             accent: None,
+            amount_in_words: None,
             font_scale: None,
             frame_inset: None,
         }
@@ -353,6 +477,7 @@ impl<'a> InvoiceDraft<'a> {
                 density: cfg
                     .density
                     .map_or_else(crate::default_density, Cow::into_owned),
+                amount_in_words: cfg.amount_in_words.unwrap_or(false),
                 accent,
                 font_scale,
                 frame_inset,
@@ -461,7 +586,11 @@ fn signature(x: DraftSignature<'_>) -> Signature {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    bound(deserialize = "'a: 'de")
+)]
 pub enum InvoiceCommand<'a> {
     Create {
         draft: Box<InvoiceDraft<'a>>,
@@ -823,6 +952,7 @@ fn command_schema() -> serde_json::Value {
             "draft_config":{"type":"object","additionalProperties":false,"properties":{
                 "schema":{"type":"string"},"format":{"type":["string","null"]},"theme":{"type":["string","null"]},"font":{"type":["string","null"]},
                 "font_weight":{"enum":["regular","semibold",null]},"density":{"type":["string","null"]},"accent":{"type":["string","null"]},
+                "amount_in_words":{"type":["boolean","null"]},
                 "font_scale":{"type":["integer","null"],"minimum":100,"maximum":140},"frame_inset":{"type":["integer","null"],"minimum":30,"maximum":60}
             }},
             "metadata":{"type":"object","additionalProperties":false,"required":["number","issued","currency"],"properties":{"number":{"type":"string"},"issued":{"type":"string"},"kind":{"type":["string","null"]},"due":{"type":["string","null"]},"terms":{"type":["string","null"]},"currency":{"type":"string"}}},
@@ -1028,6 +1158,7 @@ fn outcome_schema() -> serde_json::Value {
         serde_json::json!({
             "schema":{"type":"string"},"format":{"type":"string"},"theme":{"type":"string"},
             "font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"density":{"type":"string"},
+            "amount_in_words":{"type":"boolean"},
             "accent":{"anyOf":[{"type":"string"},{"type":"null"}]},
             "font_scale":{"type":"integer","minimum":100,"maximum":140},
             "frame_inset":{"type":"integer","minimum":30,"maximum":60}
@@ -1119,6 +1250,16 @@ fn outcome_schema() -> serde_json::Value {
             serde_json::json!({"cells":{"type":"array","items":{"type":"string"}}}),
         ),
     );
+    defs.insert(
+        "prepared_amount_in_words".into(),
+        object(
+            &["label", "amount", "currency", "text"],
+            serde_json::json!({
+                "label":{"type":"string"},"amount":{"type":["string","number"]},
+                "currency":{"type":"string"},"text":{"type":"string"}
+            }),
+        ),
+    );
     defs.insert("prepared_block".into(), serde_json::json!({
         "oneOf":[
             {"type":"object","additionalProperties":false,"required":["kind","title","rows","gap"],"properties":{"kind":{"const":"text"},"title":{"type":"string"},"rows":{"type":"array","items":{"$ref":"#/$defs/prepared_text_row"}},"gap":{"type":"integer","minimum":0}}},
@@ -1126,6 +1267,7 @@ fn outcome_schema() -> serde_json::Value {
             {"type":"object","additionalProperties":false,"required":["kind","image","owner"],"properties":{"kind":{"const":"owned_image"},"image":{"type":"integer","minimum":0},"owner":{"type":"string"}}},
             {"type":"object","additionalProperties":false,"required":["kind","methods","gap"],"properties":{"kind":{"const":"payment"},"methods":{"type":"array","items":{"$ref":"#/$defs/payment_method"}},"gap":{"type":"integer","minimum":0}}},
             {"type":"object","additionalProperties":false,"required":["kind","name","label","image","image_alt","gap"],"properties":{"kind":{"const":"signature"},"name":{"type":"string"},"label":{"type":"string"},"image":{"type":["integer","null"],"minimum":0},"image_alt":{"type":["string","null"]},"gap":{"type":"integer","minimum":0}}},
+            {"type":"object","additionalProperties":false,"required":["kind","label","text"],"properties":{"kind":{"const":"amount_in_words"},"label":{"type":"string"},"text":{"type":"string"}}},
             {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"total"}}}
         ]
     }));
@@ -1178,15 +1320,26 @@ fn outcome_schema() -> serde_json::Value {
         &["title", "number", "kind", "issued", "due", "terms", "currency", "from", "bill_to"],
         serde_json::json!({"title":{"type":"string"},"number":{"type":"string"},"kind":{"type":"string"},"issued":{"type":"string"},"due":{"type":["string","null"]},"terms":{"type":["string","null"]},"currency":{"type":"string"},"from":{"$ref":"#/$defs/prepared_party"},"bill_to":{"$ref":"#/$defs/prepared_party"}}),
     ));
+    defs.insert(
+        "prepared_amount_in_words".into(),
+        object(
+            &["label", "amount", "currency", "text"],
+            serde_json::json!({
+                "label":{"type":"string"},"amount":{"type":["string","number"]},
+                "currency":{"type":"string"},"text":{"type":"string"}
+            }),
+        ),
+    );
     defs.insert("prepared_render".into(), object(
         &["version", "format", "pages", "images", "width", "height", "currency", "grand_total", "money_format",
-         "warnings", "source_revision", "plan_digest", "tokens", "accent", "font", "font_weight", "font_scale",
+         "amount_in_words", "warnings", "source_revision", "plan_digest", "tokens", "accent", "font", "font_weight", "font_scale",
          "density_space", "png_scale", "line_advance", "upem", "ascender", "descender", "advance", "tree", "semantic"],
         serde_json::json!({
             "version":{"type":"integer","minimum":0},"format":{"enum":["html","pdf","png"]},
             "pages":{"type":"array","items":{"$ref":"#/$defs/prepared_page"}},"images":{"type":"array","items":{"$ref":"#/$defs/prepared_image"}},
             "width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"currency":{"type":"string"},
-            "grand_total":{"type":["string","number"]},"money_format":{"type":"string"},"warnings":{"type":"array","items":{"$ref":"#/$defs/render_warning"}},
+            "grand_total":{"type":["string","number"]},"money_format":{"type":"string"},
+            "amount_in_words":{"type":["array","null"],"items":{"$ref":"#/$defs/prepared_amount_in_words"}},"warnings":{"type":"array","items":{"$ref":"#/$defs/render_warning"}},
             "source_revision":{"type":"string"},"plan_digest":digest,"tokens":{"$ref":"#/$defs/theme_tokens"},
             "accent":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
             "font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"font_scale":{"type":"integer","minimum":100,"maximum":140},
@@ -1250,10 +1403,11 @@ fn outcome_schema() -> serde_json::Value {
         ),
     );
     defs.insert("capabilities".into(), serde_json::json!({
-        "type":"object","additionalProperties":false,"required":["version","commands","limits","presentation"],
+        "type":"object","additionalProperties":false,"required":["version","commands","limits","amount_in_words","presentation"],
         "properties":{
             "version":{"type":"string"},"commands":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","description","adapters","formats","limits","errors","retry"],"properties":{"id":{"type":"string"},"description":{"type":"string"},"adapters":{"type":"array","items":{"type":"string"}},"formats":{"type":"array","items":{"type":"string"}},"limits":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"enum":["invalid_request","limit","invalid_document","conflict","unsupported","invalid_asset","encoding","font","backend"]}},"retry":{"enum":["never","after_input_change","later"]}}}},
             "limits":{"type":"object","additionalProperties":false,"required":["max_source_bytes","max_rendered_bytes","max_asset_bytes","max_asset_total_bytes","max_pages","max_png_pixels","max_png_total_pixels"],"properties":{"max_source_bytes":{"type":"integer","minimum":0},"max_rendered_bytes":{"type":"integer","minimum":0},"max_asset_bytes":{"type":"integer","minimum":0},"max_asset_total_bytes":{"type":"integer","minimum":0},"max_pages":{"type":"integer","minimum":0},"max_png_pixels":{"type":"integer","minimum":0},"max_png_total_pixels":{"type":"integer","minimum":0}}},
+            "amount_in_words":{"type":"object","additionalProperties":false,"required":["enabled_by","totals","capitalization","trailing","currencies"],"properties":{"enabled_by":{"type":"string"},"totals":{"type":"array","items":{"type":"string"}},"capitalization":{"type":"string"},"trailing":{"type":"string"},"currencies":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["code","grouping","exponent","major_unit","minor_unit"],"properties":{"code":{"type":"string"},"grouping":{"enum":["indian","international"]},"exponent":{"type":"integer","minimum":0,"maximum":3},"major_unit":{"type":"string"},"minor_unit":{"type":["string","null"]}}}}}},
             "presentation":{"type":"object","additionalProperties":false,"required":["formats","themes","fonts","densities","font_scale","frame_inset","png_scale"],"properties":{"formats":{"type":"array","items":{"type":"string"}},"themes":{"type":"array","items":{"type":"string"}},"fonts":{"type":"array","items":{"type":"object","additionalProperties":true}},"densities":{"type":"array","items":{"type":"string"}},"font_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":100,"maximum":140},"maximum":{"type":"integer","minimum":100,"maximum":140}}},"frame_inset":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":30,"maximum":60},"maximum":{"type":"integer","minimum":30,"maximum":60}}},"png_scale":{"type":"object","additionalProperties":false,"required":["minimum","maximum"],"properties":{"minimum":{"type":"integer","minimum":1,"maximum":2},"maximum":{"type":"integer","minimum":1,"maximum":2}}}}}
         }
     }));
@@ -1304,15 +1458,6 @@ fn outcome_schema() -> serde_json::Value {
         &["version", "commands", "document_schema", "command_schema", "outcome_schema", "capabilities"],
         serde_json::json!({"version":{"type":"string"},"commands":{"type":"array","items":{"$ref":"#/$defs/command_descriptor"}},"document_schema":{"type":"string"},"command_schema":{"type":"string"},"outcome_schema":{"type":"string"},"capabilities":{"$ref":"#/$defs/capabilities"}}),
     ));
-
-    for descriptor in descriptors() {
-        let variant = outcome_variant(&descriptor.id);
-        let payload = defs.remove(variant).expect("outcome variant schema");
-        defs.insert(
-            variant.into(),
-            object(&[variant], serde_json::json!({variant: payload})),
-        );
-    }
     let outcome_variants = descriptors()
         .iter()
         .map(|descriptor| serde_json::json!({"$ref": format!("#/$defs/{}", outcome_variant(&descriptor.id))}))
@@ -1358,6 +1503,13 @@ pub(crate) fn registry() -> RegistrySnapshot {
             "max_pages": crate::MAX_PAGES,
             "max_png_pixels": crate::MAX_PNG_PIXELS,
             "max_png_total_pixels": crate::MAX_PNG_TOTAL_PIXELS,
+        },
+        "amount_in_words": {
+            "enabled_by": "config.amount_in_words",
+            "totals": ["section_subtotals", "grand_total", "settlement_received"],
+            "capitalization": "title_case",
+            "trailing": "Only",
+            "currencies": crate::currency_capabilities()
         },
         "presentation": {
             "formats": supported_money_formats(),
@@ -1669,7 +1821,7 @@ fn safe_manifest(d: &Document) -> SafeManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use serde::de::{self, Deserializer, IntoDeserializer, SeqAccess, Visitor};
     const SAMPLE: &str = include_str!("../../../examples/simple.md");
 
     #[test]
@@ -1987,5 +2139,128 @@ mod tests {
         assert_eq!(error.code, CommandErrorCode::InvalidRequest);
         assert_eq!(error.diagnostics[0].code, "REQUEST001");
         assert_eq!(error.retry, RetryClass::AfterInputChange);
+    }
+    struct AssetWire<'a> {
+        bytes: &'a [u8],
+        sequence: bool,
+    }
+
+    struct AssetSequence<'a>(std::slice::Iter<'a, u8>);
+
+    impl<'de> SeqAccess<'de> for AssetSequence<'de> {
+        type Error = de::value::Error;
+
+        fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Self::Error>
+        where
+            T: de::DeserializeSeed<'de>,
+        {
+            self.0
+                .next()
+                .copied()
+                .map(|value| seed.deserialize(value.into_deserializer()))
+                .transpose()
+        }
+    }
+
+    impl<'de> Deserializer<'de> for AssetWire<'de> {
+        type Error = de::value::Error;
+        fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            if self.sequence {
+                visitor.visit_seq(AssetSequence(self.bytes.iter()))
+            } else {
+                visitor.visit_bytes(self.bytes)
+            }
+        }
+
+        fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            self.deserialize_bytes(visitor)
+        }
+
+        fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+        where
+            V: Visitor<'de>,
+        {
+            if self.sequence {
+                visitor.visit_seq(AssetSequence(self.bytes.iter()))
+            } else {
+                visitor.visit_bytes(self.bytes)
+            }
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            option unit unit_struct newtype_struct seq tuple tuple_struct map
+            struct enum identifier ignored_any
+        }
+    }
+
+    #[test]
+    fn asset_byte_array_base64_and_sequence_have_identical_render_identity() {
+        const PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 8,
+            8, 6, 0, 0, 0, 196, 15, 190, 139, 0, 0, 0, 50, 73, 68, 65, 84, 120, 218, 99, 184, 160,
+            82, 240, 31, 132, 113, 1, 6, 16, 129, 79, 17, 3, 140, 129, 75, 17, 3, 50, 7, 155, 34,
+            6, 116, 29, 232, 138, 80, 220, 128, 142, 9, 42, 0, 97, 134, 255, 120, 0, 72, 1, 0, 183,
+            213, 216, 169, 177, 120, 110, 118, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+        let byte_array = deserialize_asset_bytes(AssetWire {
+            bytes: PNG,
+            sequence: false,
+        })
+        .expect("byte array");
+        let sequence = deserialize_asset_bytes(AssetWire {
+            bytes: PNG,
+            sequence: true,
+        })
+        .expect("numeric sequence");
+        assert_eq!(byte_array, sequence);
+        const BASE64: &str =
+            "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAMklEQVR42mO4oFLwH4RxAQYQgU8RA4yBSxEDMgebIgZ0HeiKUNyAjgkqAGGG/3gASAEAt9XYqbF4bnYAAAAASUVORK5CYII=";
+        let encoded = format!(
+            r#"{{"source":"./assets/signature.png","bytes":"{BASE64}","mime":"image/png"}}"#
+        );
+        let base64 = serde_json::from_str::<RenderAssetInput<'_>>(&encoded)
+            .expect("base64 asset")
+            .bytes
+            .into_owned();
+        let malformed = r#"{"source":"./assets/signature.png","bytes":"not-base64"}"#;
+        let error = serde_json::from_str::<RenderAssetInput<'_>>(malformed)
+            .expect_err("malformed base64 must fail closed");
+        assert!(error.to_string().contains("base64 asset bytes"));
+        let source = format!(
+            "{SAMPLE}\n\n## Signature\n\n![Synthetic signature](./assets/signature.png)\n- Name: Ada Example\n- Label: Authorized representative\n"
+        );
+        let render = |bytes: Bytes<'static>| match execute(InvoiceCommand::Render {
+            source: Source::Markdown(Cow::Owned(source.clone())),
+            options: RenderOptionsInput {
+                format: RenderFormat::Html,
+                assets: vec![RenderAssetInput {
+                    source: Cow::Borrowed("./assets/signature.png"),
+                    bytes,
+                    mime: Some(Cow::Borrowed("image/png")),
+                }],
+                ..Default::default()
+            },
+        })
+        .expect("render")
+        {
+            CommandOutcome::Rendered {
+                plan_digest, bytes, ..
+            } => (plan_digest, bytes),
+            other => panic!("expected rendered outcome, got {other:?}"),
+        };
+        let (byte_digest, byte_output) = render(byte_array);
+        let (sequence_digest, sequence_output) = render(sequence);
+        assert_eq!(byte_digest, sequence_digest);
+        assert_eq!(byte_output, sequence_output);
+        let (base64_digest, base64_output) = render(Cow::Owned(base64));
+        assert_eq!(byte_digest, base64_digest);
+        assert_eq!(byte_output, base64_output);
     }
 }

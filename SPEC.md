@@ -25,9 +25,9 @@ font: geist-mono
 font-weight: regular
 density: comfortable
 accent: "#2f6fed"
+amount-in-words: true
 font-scale: 100
 frame-inset: 54
----
 
 # Consulting services
 
@@ -64,8 +64,19 @@ Frontmatter contains only these keys:
 - `font-weight` defaults to `regular` and accepts `regular` or `semibold`.
 - `density` defaults to `comfortable`.
 - `accent` is optional. It must be lowercase `#rrggbb`; absent uses the theme accent.
+- `amount-in-words` defaults to `false`; when true, it enables engine-generated amount words.
 - `font-scale` defaults to `100` and accepts integer percentages from `100` to `140`.
 - `frame-inset` defaults to `54` and accepts integer A4 layout units from `30` to `60`. The content gutters are 11.57 units horizontally, 23.14 units above, and 17.35 units below.
+
+`amount-in-words` defaults to `false`. When `true`, the engine generates words for
+ordinary table subtotals, the grand total, and each settlement `Received` amount.
+Adapters MUST use the generated values in `PreparedRender.amount_in_words`; they
+MUST NOT generate or alter the words. Amounts use title case, hyphenated compound
+numbers, and end with `Only`. International grouping applies to every currency
+except INR, which uses Indian thousands, lakh, and crore grouping. Currency minor
+units use the ISO currency convention: EUR and USD use cents, INR uses paise, JPY
+has no minor unit, and KWD uses fils. Amounts are rounded to the currency exponent.
+Zero is rendered as `Zero ... Only`; negative non-zero values begin with `Negative`.
 
 The UI may offer font-scale steps of five, but parsers accept every integer in range.
 `font-weight` controls the base text weight. Semantic headings and strong text remain
@@ -180,6 +191,10 @@ Date | Paid | Paid currency | Received | Received currency
 Each date is real ISO date text. Each amount is an exact decimal without thousands
 separators. Each currency is a three-letter uppercase code. GFM table pipes are escaped
 as `\|`, literal backslashes as `\\`, and typed newlines serialize as `<br>`. Alignment
+
+Adapters supply local image bytes. Native and WASM adapters accept byte arrays;
+JSON, REST, and MCP transports use canonical padded base64 strings or numeric
+byte sequences. The engine never fetches remote assets. Invalid base64 is rejected.
 markers (`:---`, `:---:`, `---:`) are preserved in the typed table model.
 
 `Payment` contains one or more column-zero H3 method headings. Each method contains

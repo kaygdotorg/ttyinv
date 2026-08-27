@@ -152,6 +152,8 @@ pub struct Config {
     pub density: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<Accent>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub amount_in_words: bool,
     #[serde(default)]
     pub font_scale: FontScale,
     #[serde(default)]
@@ -183,6 +185,9 @@ pub(crate) fn default_font() -> String {
 }
 pub(crate) fn default_density() -> String {
     "comfortable".into()
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

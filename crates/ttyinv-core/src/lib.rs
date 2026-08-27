@@ -6,13 +6,17 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+mod amount_words;
 mod command;
 mod model;
 mod render;
+pub use amount_words::{
+    amount_in_words, currency_capabilities, currency_words, CurrencyWords, CurrencyWordsCapability,
+};
 pub use command::*;
 pub use render::{
-    PreparedBlock, PreparedImage, PreparedItem, PreparedLink, PreparedNode, PreparedPage,
-    PreparedParty, PreparedPrimitive, PreparedRender, PreparedSemantic, PreparedSpan,
+    PreparedAmountInWords, PreparedBlock, PreparedImage, PreparedItem, PreparedLink, PreparedNode,
+    PreparedPage, PreparedParty, PreparedPrimitive, PreparedRender, PreparedSemantic, PreparedSpan,
     PreparedTableRow, PreparedTextRow, Presentation, PresentationAccent, PresentationContent,
     PresentationFont, PresentationScale, PresentationTokens, RenderFormat, RenderWarning,
     ThemeTokens, MAX_ASSET_BYTES, MAX_ASSET_TOTAL_BYTES, MAX_PAGES, MAX_PNG_PIXELS,
@@ -271,6 +275,8 @@ struct FrontmatterConfig {
     font_weight: FontWeight,
     #[serde(default = "model::default_density")]
     density: String,
+    #[serde(rename = "amount-in-words", default)]
+    amount_in_words: bool,
     #[serde(default)]
     accent: Option<Accent>,
     #[serde(rename = "font-scale", default)]
@@ -278,7 +284,6 @@ struct FrontmatterConfig {
     #[serde(rename = "frame-inset", default)]
     frame_inset: FrameInset,
 }
-
 impl From<FrontmatterConfig> for Config {
     fn from(value: FrontmatterConfig) -> Self {
         Self {
@@ -288,6 +293,7 @@ impl From<FrontmatterConfig> for Config {
             font: value.font,
             font_weight: value.font_weight,
             density: value.density,
+            amount_in_words: value.amount_in_words,
             accent: value.accent,
             font_scale: value.font_scale,
             frame_inset: value.frame_inset,
@@ -1371,8 +1377,13 @@ pub(crate) fn serialize_markdown(d: &Document) -> String {
         .accent
         .as_ref()
         .map_or_else(String::new, |value| format!("accent: \"{value}\"\n"));
+    let amount_in_words = d
+        .config
+        .amount_in_words
+        .then(|| "amount-in-words: true\n")
+        .unwrap_or_default();
     let mut s = format!(
-        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\nfont-weight: {}\ndensity: {}\n{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
+        "---\nschema: {}\nformat: {}\ntheme: {}\nfont: {}\nfont-weight: {}\ndensity: {}\n{}{}font-scale: {}\nframe-inset: {}\n---\n\n# {}\n\n",
         escape_line(&d.config.schema),
         escape_line(&d.config.format),
         escape_line(&d.config.theme),
@@ -1380,6 +1391,7 @@ pub(crate) fn serialize_markdown(d: &Document) -> String {
         d.config.font_weight,
         escape_line(&d.config.density),
         accent,
+        amount_in_words,
         d.config.font_scale,
         d.config.frame_inset,
         escape_line(&d.title)
@@ -1930,6 +1942,7 @@ fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
             "font" => "font",
             "font_weight" => "font-weight",
             "density" => "density",
+            "amount_in_words" => "amount-in-words",
             "accent" => "accent",
             "font_scale" => "font-scale",
             "frame_inset" => "frame-inset",
@@ -1937,7 +1950,7 @@ fn set_scalar(s: &str, p: &str, v: &str) -> Result<String, Diagnostic> {
         };
         if !key.is_empty() {
             if v.is_empty() {
-                if key == "accent" {
+                if key == "accent" || key == "amount-in-words" {
                     return remove_config_scalar(&mut l, key).map(|_| finish(s, l));
                 }
                 return Err(Diagnostic::error(

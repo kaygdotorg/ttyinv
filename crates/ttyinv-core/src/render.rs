@@ -877,8 +877,19 @@ enum Block {
         image_alt: Option<String>,
         gap: u8,
     },
+    AmountInWords {
+        label: String,
+        text: String,
+    },
     Total,
     PageBreak,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedAmountInWords {
+    pub label: String,
+    pub amount: Decimal,
+    pub currency: String,
+    pub text: String,
 }
 #[derive(Clone)]
 struct Page {
@@ -896,6 +907,7 @@ pub struct PreparedRender {
     pub currency: String,
     pub grand_total: Decimal,
     pub money_format: String,
+    pub amount_in_words: Option<Vec<PreparedAmountInWords>>,
     pub warnings: Vec<RenderWarning>,
     pub source_revision: String,
     pub plan_digest: [u8; 32],
@@ -988,6 +1000,10 @@ pub enum PreparedBlock {
         image: Option<usize>,
         image_alt: Option<String>,
         gap: u8,
+    },
+    AmountInWords {
+        label: String,
+        text: String,
     },
     Total,
 }
@@ -1228,6 +1244,7 @@ struct Plan {
     currency: String,
     semantic: PreparedSemantic,
     money_format: String,
+    amount_in_words: Option<Vec<PreparedAmountInWords>>,
     warnings: Vec<RenderWarning>,
 }
 #[derive(Clone)]
@@ -1321,6 +1338,10 @@ impl PreparedRender {
                     image: image.as_ref().and_then(image_index),
                     image_alt: image_alt.clone(),
                     gap: *gap,
+                }),
+                Block::AmountInWords { label, text } => Some(PreparedBlock::AmountInWords {
+                    label: label.clone(),
+                    text: text.clone(),
                 }),
                 Block::Total => Some(PreparedBlock::Total),
                 Block::PageBreak | Block::Title => None,
@@ -1492,6 +1513,7 @@ impl PreparedRender {
             currency: plan.currency.clone(),
             grand_total: plan.grand_total,
             money_format: plan.money_format.clone(),
+            amount_in_words: plan.amount_in_words.clone(),
             warnings,
             source_revision: String::new(),
             plan_digest: [0; 32],
@@ -1610,6 +1632,10 @@ fn prepared_block_to_block(
                 .transpose()?,
             image_alt: image_alt.clone(),
             gap: *gap,
+        },
+        PreparedBlock::AmountInWords { label, text } => Block::AmountInWords {
+            label: label.clone(),
+            text: text.clone(),
         },
         PreparedBlock::Total => Block::Total,
     })
@@ -1889,6 +1915,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
         currency: plan.currency.clone(),
         semantic: plan.semantic.clone(),
         money_format: plan.money_format.clone(),
+        amount_in_words: plan.amount_in_words.clone(),
         warnings: plan.warnings.clone(),
     })
 }
@@ -2288,11 +2315,63 @@ fn positioned_height(block: &Block, r: &Resolved) -> f32 {
         }
         Block::OwnedImage { owner, .. } if *owner == "From" || *owner == "Bill to" => 0.0,
         Block::OwnedImage { image, .. } => image.display_height + line,
+        Block::AmountInWords { text, .. } => {
+            let width = r.geometry.page_w - 2.0 * (f32::from(r.frame_inset) + r.geometry.gutter_x);
+            let lines = wrap_runs(r, &inline_runs(text), width, r.geometry.font_detail)
+                .len()
+                .max(1);
+            lines as f32 * r.line_advance + r.geometry.summary_pad_top * density
+        }
         Block::Total => g.total_margin_top * density + line + g.summary_pad_top * density,
         Block::PageBreak => 0.0,
     }
 }
 
+fn amount_in_words_entries(doc: &Document) -> Option<Vec<PreparedAmountInWords>> {
+    if !doc.config.amount_in_words {
+        return None;
+    }
+    let mut entries = Vec::new();
+    for section in &doc.ordinary_sections {
+        if !section.directives.summary_only {
+            if let Some(amount) = section.total {
+                entries.push(PreparedAmountInWords {
+                    label: format!("{} subtotal", section.title),
+                    amount,
+                    currency: doc.metadata.currency.clone(),
+                    text: crate::amount_in_words(amount, &doc.metadata.currency),
+                });
+            }
+        }
+    }
+    if doc.ordinary_sections.iter().any(|section| {
+        matches!(&section.body, SectionBody::Table(_))
+            && !section.directives.summary_only
+            && section.total.is_some()
+    }) {
+        entries.push(PreparedAmountInWords {
+            label: "Total due".into(),
+            amount: doc.grand_total,
+            currency: doc.metadata.currency.clone(),
+            text: crate::amount_in_words(doc.grand_total, &doc.metadata.currency),
+        });
+    }
+    if let Some(settlements) = &doc.settlements {
+        for row in &settlements.rows {
+            if let (Some(value), Some(currency)) = (row.get(3), row.get(4)) {
+                if let Ok(amount) = value.parse::<Decimal>() {
+                    entries.push(PreparedAmountInWords {
+                        label: "Received".into(),
+                        amount,
+                        currency: currency.clone(),
+                        text: crate::amount_in_words(amount, currency),
+                    });
+                }
+            }
+        }
+    }
+    Some(entries)
+}
 fn is_footer_block(block: &Block) -> bool {
     match block {
         Block::Table { title, .. } => title == "Settlements",
@@ -2341,6 +2420,13 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
             &mut image_budget,
             &mut warnings,
         )?;
+        if doc.config.amount_in_words && !section.directives.summary_only && section.total.is_some()
+        {
+            blocks.push(Block::AmountInWords {
+                label: format!("{} subtotal in words", section.title),
+                text: crate::amount_in_words(section.total.unwrap(), &doc.metadata.currency),
+            });
+        }
     }
     if doc
         .ordinary_sections
@@ -2348,12 +2434,30 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         .any(|section| matches!(&section.body, SectionBody::Table(_)) && section.total.is_some())
     {
         blocks.push(Block::Total);
+        if doc.config.amount_in_words {
+            blocks.push(Block::AmountInWords {
+                label: "Total due in words".into(),
+                text: crate::amount_in_words(doc.grand_total, &doc.metadata.currency),
+            });
+        }
     }
     if let Some(t) = &doc.settlements {
         if doc.settlements_page_break_before {
             blocks.push(Block::PageBreak);
         }
         blocks.push(table_block("Settlements", t, doc, None, 1, None));
+        if doc.config.amount_in_words {
+            for row in &t.rows {
+                if let (Some(value), Some(currency)) = (row.get(3), row.get(4)) {
+                    if let Ok(amount) = value.parse::<Decimal>() {
+                        blocks.push(Block::AmountInWords {
+                            label: "Received in words".into(),
+                            text: crate::amount_in_words(amount, currency),
+                        });
+                    }
+                }
+            }
+        }
     }
     if let Some(payment) = &doc.payment {
         if doc.payment_page_break_before {
@@ -2657,6 +2761,7 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         currency: doc.metadata.currency.clone(),
         semantic: PreparedSemantic::from_document(doc),
         money_format: doc.config.format.clone(),
+        amount_in_words: amount_in_words_entries(doc),
         warnings,
     })
 }
@@ -3760,6 +3865,26 @@ fn build_positioned(
                         );
                         y += r.line_advance + r.geometry.summary_pad_top * r.density_space;
                     }
+                }
+                Block::AmountInWords { label, text } => {
+                    let start = page.items.len();
+                    let _ = push_wrapped_text!(
+                        &mut page,
+                        r,
+                        &format!("{label}: {text}"),
+                        &[],
+                        left,
+                        y,
+                        width,
+                        detail,
+                        r.line_advance,
+                        r.tokens.muted,
+                        Face::Regular,
+                        Align::Left,
+                        0.0,
+                    );
+                    mark_text_items(&mut page, start, None);
+                    y += positioned_height(block, r);
                 }
                 Block::Text { title, rows, gap } => {
                     let gap_space = if page_index == 0 && section_slot == 0 {
@@ -5019,6 +5144,11 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                         }
                         o.push_str("</section>");
                     }
+                    Block::AmountInWords { label, text } => o.push_str(&format!(
+                        "<p class=\"amount-in-words\"><strong>{}</strong> {}</p>",
+                        esc(label),
+                        esc(text)
+                    )),
                     Block::Total => o.push_str(&format!(
                         "<p><strong>Total due</strong> {}</p>",
                         esc(&format_money(

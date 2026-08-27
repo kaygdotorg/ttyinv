@@ -169,6 +169,16 @@
         "foreign-currency amount column",
         "payable amount column"
       ]
+    },
+    {
+      "id": "19-amount-in-words",
+      "source": "19-amount-in-words.md",
+      "expected": "19-amount-in-words.json",
+      "features": [
+        "engine-generated amount words",
+        "Indian numbering",
+        "currency minor units"
+      ]
     }
   ]
 }

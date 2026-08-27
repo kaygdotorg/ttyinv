@@ -1,0 +1,37 @@
+{
+  "fixture": "19-amount-in-words",
+  "source": "19-amount-in-words.md",
+  "valid": true,
+  "config": {
+    "theme": "printable",
+    "font": "geist-mono",
+    "density": "comfortable",
+    "amount_in_words": true
+  },
+  "currency": "INR",
+  "currency_exponent": 2,
+  "content_order": ["title", "metadata", "from", "bill_to", "section:Contract fees"],
+  "sections": [{
+    "title": "Contract fees",
+    "body": "table",
+    "row_amounts": ["560499.97"],
+    "currency_exponent": 2,
+    "directives": {"gap": "standard", "page_break_before": false, "summary_only": false},
+    "total": "560499.97"
+  }],
+  "fixed_blocks": [
+    {"name": "from", "present": true, "movable": false, "page_break_before": false},
+    {"name": "bill_to", "present": true, "movable": false, "page_break_before": false},
+    {"name": "settlements", "present": false, "movable": false, "page_break_before": false},
+    {"name": "payment", "present": false, "movable": false, "page_break_before": false},
+    {"name": "signature", "present": false, "movable": false, "page_break_before": false}
+  ],
+  "grand_total": "560499.97",
+  "amount_in_words": ["Five Lakh Sixty Thousand Four Hundred Ninety-Nine Rupees and Ninety-Seven Paise Only"],
+  "links": [],
+  "images": [],
+  "diagnostics": [],
+  "method": "canonical Rust CLI validation and engine-generated amount words",
+  "notes": {},
+  "fixed_block_order": ["from", "bill_to", "settlements", "payment", "signature"]
+}
