@@ -197,7 +197,6 @@ fn scalar_or_tree(
                 format!("{label} exceeds adapter size limit"),
             ));
         }
-        budget.charge(length as usize)?;
         let copy = js_sys::Uint8Array::new_with_length(length);
         copy.set(bytes, 0);
         return Ok(copy.into());
@@ -318,10 +317,13 @@ fn snapshot_options(
                             }
                         }
                         "bytes" => {
-                            if asset_value.dyn_ref::<js_sys::Uint8Array>().is_none() {
+                            if !asset_value.is_string()
+                                && asset_value.dyn_ref::<js_sys::Uint8Array>().is_none()
+                                && asset_value.dyn_ref::<js_sys::Array>().is_none()
+                            {
                                 return Err(preflight_error(
                                     CommandErrorCode::InvalidAsset,
-                                    "asset.bytes must be Uint8Array",
+                                    "asset.bytes must be a Uint8Array, base64 string, or byte sequence",
                                 ));
                             }
                             scalar_or_tree(&asset_value, "asset.bytes", budget, 0)?
@@ -677,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn assets_must_be_uint8_arrays_and_are_copied() {
+    fn assets_accept_wire_forms_but_reject_nonsense() {
         let options = js_sys::Object::new();
         let assets = js_sys::Array::new();
         let asset = js_sys::Object::new();
@@ -687,7 +689,7 @@ mod tests {
             &JsValue::from_str("logo.png"),
         )
         .unwrap();
-        js_sys::Reflect::set(&asset, &JsValue::from_str("bytes"), &js_sys::Array::new()).unwrap();
+        js_sys::Reflect::set(&asset, &JsValue::from_str("bytes"), &JsValue::from_f64(7.0)).unwrap();
         assets.push(&asset);
         js_sys::Reflect::set(&options, &JsValue::from_str("assets"), &assets).unwrap();
         assert_eq!(
@@ -701,6 +703,101 @@ mod tests {
             ),
             "invalid_asset"
         );
+    }
+    #[test]
+    fn render_accepts_uint8array_assets() {
+        let source = r#"---
+schema: ttyinv/v2
+format: code-comma-dot
+theme: printable
+font: geist-mono
+density: comfortable
+---
+# Synthetic signature
+
+- Number: INV-WASM-SIG-001
+- Kind: standard
+- Issued: 2026-08-27
+- Currency: EUR
+
+## From
+
+- Name: Fictional Studio
+
+## Bill to
+
+- Name: Fictional Client
+
+## Services
+
+| Description | Units | Rate | Amount (EUR) |
+|---|---:|---:|---:|
+| Synthetic work | 1 | 750.00 | auto |
+
+## Signature
+
+![Synthetic signature](./assets/signature.png)
+- Name: Ada Example
+- Label: Authorized representative
+"#;
+        let signature_png: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 8, 0, 0, 0, 8,
+            8, 6, 0, 0, 0, 196, 15, 190, 139, 0, 0, 0, 50, 73, 68, 65, 84, 120, 218, 99, 184, 160,
+            82, 240, 31, 132, 113, 1, 6, 16, 129, 79, 17, 3, 140, 129, 75, 17, 3, 50, 7, 155, 34,
+            6, 116, 29, 232, 138, 80, 220, 128, 142, 9, 42, 0, 97, 134, 255, 120, 0, 72, 1, 0, 183,
+            213, 216, 169, 177, 120, 110, 118, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+        ];
+        let command = js_sys::Object::new();
+        let options = js_sys::Object::new();
+        let source_value = js_sys::Object::new();
+        let assets = js_sys::Array::new();
+        let asset = js_sys::Object::new();
+        let bytes = js_sys::Uint8Array::new_with_length(signature_png.len() as u32);
+        bytes.copy_from(signature_png);
+        js_sys::Reflect::set(
+            &source_value,
+            &JsValue::from_str("markdown"),
+            &JsValue::from_str(source),
+        )
+        .unwrap();
+        js_sys::Reflect::set(
+            &asset,
+            &JsValue::from_str("source"),
+            &JsValue::from_str("./assets/signature.png"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&asset, &JsValue::from_str("bytes"), &bytes).unwrap();
+        js_sys::Reflect::set(
+            &asset,
+            &JsValue::from_str("mime"),
+            &JsValue::from_str("image/png"),
+        )
+        .unwrap();
+        assets.push(&asset);
+        js_sys::Reflect::set(
+            &options,
+            &JsValue::from_str("format"),
+            &JsValue::from_str("html"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&options, &JsValue::from_str("assets"), &assets).unwrap();
+        js_sys::Reflect::set(
+            &command,
+            &JsValue::from_str("kind"),
+            &JsValue::from_str("render"),
+        )
+        .unwrap();
+        js_sys::Reflect::set(&command, &JsValue::from_str("source"), &source_value).unwrap();
+        js_sys::Reflect::set(&command, &JsValue::from_str("options"), &options).unwrap();
+        let result = execute(command.into()).expect("Uint8Array asset render");
+        let rendered =
+            js_sys::Reflect::get(&result, &JsValue::from_str("rendered")).expect("rendered");
+        let output =
+            js_sys::Reflect::get(&rendered, &JsValue::from_str("bytes")).expect("rendered bytes");
+        let output = output
+            .dyn_into::<js_sys::Uint8Array>()
+            .expect("Uint8Array output");
+        assert!(output.length() > signature_png.len() as u32);
     }
 
     #[test]
