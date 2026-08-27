@@ -813,6 +813,7 @@ struct TextRow {
     text: String,
     runs: Vec<InlineRun>,
     link: Option<String>,
+    edit_path: Option<String>,
 }
 #[derive(Clone, PartialEq, Eq)]
 enum InlineKind {
@@ -835,6 +836,7 @@ struct InlineRun {
 struct TableRow {
     cells: Vec<String>,
     alignments: Vec<TableAlignment>,
+    edit_paths: Vec<Option<String>>,
 }
 #[derive(Clone)]
 enum Block {
@@ -982,6 +984,7 @@ pub enum PreparedBlock {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedItem {
     pub node: usize,
+    pub edit_path: Option<String>,
     pub primitive: PreparedPrimitive,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1176,6 +1179,7 @@ enum Primitive {
         advance: f32,
         tracking: f32,
         spans: Vec<Span>,
+        edit_path: Option<String>,
     },
     Image {
         x: f32,
@@ -1183,6 +1187,7 @@ enum Primitive {
         w: f32,
         h: f32,
         index: usize,
+        edit_path: Option<String>,
     },
 }
 #[derive(Clone, Copy)]
@@ -1318,92 +1323,103 @@ impl PreparedRender {
                 items: page
                     .items
                     .iter()
-                    .map(|placed| PreparedItem {
-                        node: placed.node,
-                        primitive: match &placed.primitive {
-                            Primitive::Rect { x, y, w, h, fill } => PreparedPrimitive::Rect {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                                fill: *fill,
+                    .map(|placed| {
+                        let edit_path = match &placed.primitive {
+                            Primitive::Text { edit_path, .. }
+                            | Primitive::Image { edit_path, .. } => edit_path.clone(),
+                            _ => None,
+                        };
+                        PreparedItem {
+                            node: placed.node,
+                            edit_path,
+                            primitive: match &placed.primitive {
+                                Primitive::Rect { x, y, w, h, fill } => PreparedPrimitive::Rect {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                    fill: *fill,
+                                },
+                                Primitive::Stroke {
+                                    x,
+                                    y,
+                                    w,
+                                    h,
+                                    dash,
+                                    color,
+                                } => PreparedPrimitive::Stroke {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                    dash: dash_name(*dash).into(),
+                                    color: *color,
+                                },
+                                Primitive::Rule {
+                                    x,
+                                    y,
+                                    w,
+                                    dash,
+                                    color,
+                                } => PreparedPrimitive::Rule {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    dash: dash_name(*dash).into(),
+                                    color: *color,
+                                },
+                                Primitive::VRule {
+                                    x,
+                                    y,
+                                    h,
+                                    dash,
+                                    color,
+                                } => PreparedPrimitive::VRule {
+                                    x: *x,
+                                    y: *y,
+                                    h: *h,
+                                    dash: dash_name(*dash).into(),
+                                    color: *color,
+                                },
+                                Primitive::Text {
+                                    x,
+                                    baseline,
+                                    size,
+                                    align,
+                                    advance,
+                                    tracking,
+                                    spans,
+                                    ..
+                                } => PreparedPrimitive::Text {
+                                    x: *x,
+                                    baseline: *baseline,
+                                    size: *size,
+                                    align: align_name(*align).into(),
+                                    advance: *advance,
+                                    tracking: *tracking,
+                                    spans: spans
+                                        .iter()
+                                        .map(|span| PreparedSpan {
+                                            text: span.text.clone(),
+                                            face: face_name(span.face).into(),
+                                            slant: slant_name(span.slant).into(),
+                                            underline: span.underline,
+                                            href: span.href.clone(),
+                                            color: span.color,
+                                        })
+                                        .collect(),
+                                },
+                                Primitive::Image {
+                                    x, y, w, h, index, ..
+                                } => PreparedPrimitive::Image {
+                                    x: *x,
+                                    y: *y,
+                                    w: *w,
+                                    h: *h,
+                                    index: *index,
+                                },
                             },
-                            Primitive::Stroke {
-                                x,
-                                y,
-                                w,
-                                h,
-                                dash,
-                                color,
-                            } => PreparedPrimitive::Stroke {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                                dash: dash_name(*dash).into(),
-                                color: *color,
-                            },
-                            Primitive::Rule {
-                                x,
-                                y,
-                                w,
-                                dash,
-                                color,
-                            } => PreparedPrimitive::Rule {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                dash: dash_name(*dash).into(),
-                                color: *color,
-                            },
-                            Primitive::VRule {
-                                x,
-                                y,
-                                h,
-                                dash,
-                                color,
-                            } => PreparedPrimitive::VRule {
-                                x: *x,
-                                y: *y,
-                                h: *h,
-                                dash: dash_name(*dash).into(),
-                                color: *color,
-                            },
-                            Primitive::Text {
-                                x,
-                                baseline,
-                                size,
-                                align,
-                                advance,
-                                tracking,
-                                spans,
-                            } => PreparedPrimitive::Text {
-                                x: *x,
-                                baseline: *baseline,
-                                size: *size,
-                                align: align_name(*align).into(),
-                                advance: *advance,
-                                tracking: *tracking,
-                                spans: spans
-                                    .iter()
-                                    .map(|span| PreparedSpan {
-                                        text: span.text.clone(),
-                                        face: face_name(span.face).into(),
-                                        slant: slant_name(span.slant).into(),
-                                        underline: span.underline,
-                                        href: span.href.clone(),
-                                        color: span.color,
-                                    })
-                                    .collect(),
-                            },
-                            Primitive::Image { x, y, w, h, index } => PreparedPrimitive::Image {
-                                x: *x,
-                                y: *y,
-                                w: *w,
-                                h: *h,
-                                index: *index,
-                            },
-                        },
+                        }
                     })
                     .collect(),
                 links: page
@@ -1529,6 +1545,7 @@ fn prepared_block_to_block(
                     text: row.text.clone(),
                     runs: Vec::new(),
                     link: None,
+                    edit_path: None,
                 })
                 .collect(),
             gap: *gap,
@@ -1546,6 +1563,7 @@ fn prepared_block_to_block(
                 .map(|row| TableRow {
                     cells: row.cells.clone(),
                     alignments: vec![TableAlignment::None; row.cells.len()],
+                    edit_paths: vec![None; row.cells.len()],
                 })
                 .collect(),
             gap: *gap,
@@ -1762,6 +1780,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
                                     })
                                 })
                                 .collect::<Result<_, RenderError>>()?,
+                            edit_path: None,
                         },
                         PreparedPrimitive::Image { x, y, w, h, index } => {
                             if *index >= plan.images.len() {
@@ -1775,6 +1794,7 @@ fn prepared_encoding(plan: &PreparedRender) -> Result<Plan, RenderError> {
                                 w: *w,
                                 h: *h,
                                 index: *index,
+                                edit_path: None,
                             }
                         }
                     };
@@ -2301,9 +2321,10 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
             owner: "Bill to",
         });
     }
-    for section in &doc.ordinary_sections {
+    for (section_index, section) in doc.ordinary_sections.iter().enumerate() {
         section_block(
             section,
+            section_index,
             doc,
             &mut blocks,
             &resolved.assets,
@@ -2322,7 +2343,7 @@ fn layout(doc: &Document, resolved: Resolved) -> Result<Plan, RenderError> {
         if doc.settlements_page_break_before {
             blocks.push(Block::PageBreak);
         }
-        blocks.push(table_block("Settlements", t, doc, None, 1));
+        blocks.push(table_block("Settlements", t, doc, None, 1, None));
     }
     if let Some(payment) = &doc.payment {
         if doc.payment_page_break_before {
@@ -2719,11 +2740,6 @@ macro_rules! push_wrapped_text {
         )
     };
 }
-struct TablePlacement<'a> {
-    x: f32,
-    y: &'a mut f32,
-    width: f32,
-}
 macro_rules! render_table_primitives {
     ($page:expr, $r:expr, $title:expr, $headings:expr, $rows:expr, $x:expr, $y:expr, $width:expr $(,)?) => {
         render_table_primitives_impl(
@@ -2739,6 +2755,11 @@ macro_rules! render_table_primitives {
             },
         )
     };
+}
+struct TablePlacement<'a> {
+    x: f32,
+    y: &'a mut f32,
+    width: f32,
 }
 fn push_text_impl(
     page: &mut DisplayPage,
@@ -2768,6 +2789,7 @@ fn push_text_impl(
             advance,
             tracking: style.tracking,
             spans: text_spans(text, InlineKind::Text, style.color, style.face),
+            edit_path: None,
         },
     });
 }
@@ -2911,6 +2933,7 @@ fn push_wrapped_text_impl(
                     align: Align::Left,
                     advance: r.advance * placement.size / r.upem,
                     tracking: style.tracking,
+                    edit_path: None,
                     spans,
                 },
             });
@@ -2992,7 +3015,67 @@ fn push_rule(page: &mut DisplayPage, x: f32, y: f32, w: f32, color: [u8; 3]) {
         },
     });
 }
-
+fn mark_text_items(page: &mut DisplayPage, start: usize, path: Option<String>) {
+    if path.is_none() {
+        return;
+    }
+    for item in page.items.iter_mut().skip(start) {
+        if let Primitive::Text { edit_path, .. } = &mut item.primitive {
+            *edit_path = path.clone();
+        }
+    }
+}
+fn path_section_index(path: &str) -> Option<usize> {
+    let rest = path.strip_prefix("sections[")?;
+    let (index, _) = rest.split_once(']')?;
+    index.parse().ok()
+}
+fn node_for_path(doc: &Document, path: &str) -> Option<usize> {
+    if path == "title" {
+        return Some(1);
+    }
+    if path.starts_with("metadata.") {
+        return Some(2);
+    }
+    for (root, node) in [("from.", 4), ("bill_to.", 5)] {
+        if path.starts_with(root) {
+            return Some(node);
+        }
+    }
+    if path.starts_with("settlements.") {
+        return Some(8);
+    }
+    if path.starts_with("payment.") {
+        return Some(9);
+    }
+    if path.starts_with("signature.") {
+        return Some(10);
+    }
+    let rest = path.strip_prefix("sections[")?;
+    let (index, tail) = rest.split_once(']')?;
+    let index: usize = index.parse().ok()?;
+    let mut node = 11;
+    for section in doc.ordinary_sections.iter().take(index) {
+        node += if matches!(&section.body, SectionBody::Table(_)) {
+            7
+        } else {
+            3
+        };
+    }
+    if index >= doc.ordinary_sections.len() {
+        return None;
+    }
+    if tail.starts_with(".table.") {
+        node += if tail.starts_with(".table.headings[") {
+            5
+        } else {
+            6
+        };
+    } else if tail == ".prose" {
+        node += 1;
+    }
+    Some(node)
+}
 fn push_notch(page: &mut DisplayPage, r: &Resolved, title: &str, x: f32, y: f32) {
     let g = &r.geometry;
     let size = g.font_body * f32::from(r.font_scale) / 100.0;
@@ -3022,6 +3105,7 @@ fn push_notch(page: &mut DisplayPage, r: &Resolved, title: &str, x: f32, y: f32)
             advance,
             tracking: 0.0,
             spans: text_spans(&text, InlineKind::Text, r.tokens.muted, Face::Regular),
+            edit_path: None,
         },
     });
 }
@@ -3053,6 +3137,10 @@ fn render_table_primitives_impl(
     rows: &[TableRow],
     placement: TablePlacement<'_>,
 ) {
+    let section_index = rows
+        .iter()
+        .flat_map(|row| row.edit_paths.iter().flatten())
+        .find_map(|path| path_section_index(path));
     let x = placement.x;
     let y = placement.y;
     let width = placement.width;
@@ -3062,8 +3150,13 @@ fn render_table_primitives_impl(
     let pad_top = g.cell_pad_top * r.density_space;
     let pad_bottom = g.cell_pad_bottom * r.density_space;
     push_rule(page, x, *y, width, r.tokens.rule);
+    let notch_start = page.items.len();
     push_notch(page, r, title, x + g.notch_left, *y);
-    *y += g.section_pad_top * r.density_space;
+    mark_text_items(
+        page,
+        notch_start,
+        section_index.map(|n| format!("sections[{n}].title")),
+    );
     let widths = column_widths(headings.len(), width);
     let mut header_lines = 1usize;
     for (i, heading) in headings.iter().enumerate() {
@@ -3077,6 +3170,7 @@ fn render_table_primitives_impl(
         } else {
             g.cell_pad_x
         };
+        let start = page.items.len();
         let lines = push_wrapped_text!(
             page,
             r,
@@ -3092,12 +3186,17 @@ fn render_table_primitives_impl(
             if right { Align::Right } else { Align::Left },
             0.0,
         );
+        mark_text_items(
+            page,
+            start,
+            section_index.map(|n| format!("sections[{n}].table.headings[{i}]")),
+        );
         header_lines = header_lines.max(lines);
     }
     *y += header_lines as f32 * line + pad_bottom;
     push_rule(page, x, *y, width, r.tokens.rule);
     *y += pad_top;
-    for row in rows {
+    for (_row_index, row) in rows.iter().enumerate() {
         if row
             .cells
             .first()
@@ -3119,6 +3218,7 @@ fn render_table_primitives_impl(
             };
             let cell_width =
                 (widths.get(i).copied().unwrap_or(0.0) - left_pad - right_pad).max(1.0);
+            let start = page.items.len();
             let lines = push_wrapped_text!(
                 page,
                 r,
@@ -3138,6 +3238,7 @@ fn render_table_primitives_impl(
                 },
                 0.0,
             );
+            mark_text_items(page, start, row.edit_paths.get(i).cloned().flatten());
             row_lines = row_lines.max(lines);
         }
         *y += row_lines as f32 * line + pad_bottom + pad_top;
@@ -3304,10 +3405,11 @@ fn build_positioned(
                 Align::Center,
                 0.0,
             );
+            let start = page.items.len();
             let _ = push_wrapped_text!(
                 &mut page,
                 r,
-                &doc.from.name,
+                &doc.title,
                 &[],
                 left,
                 header_top,
@@ -3319,6 +3421,7 @@ fn build_positioned(
                 Align::Left,
                 g.brand_tracking * f32::from(r.font_scale) / 100.0,
             );
+            mark_text_items(&mut page, start, Some("title".into()));
             for (i, (label, value, face)) in meta_rows.iter().enumerate() {
                 let top = header_top + i as f32 * (r.line_advance + 3.31);
                 push_text!(
@@ -3334,6 +3437,7 @@ fn build_positioned(
                     Align::Left,
                     0.0,
                 );
+                let start = page.items.len();
                 push_text!(
                     &mut page,
                     r,
@@ -3347,6 +3451,16 @@ fn build_positioned(
                     Align::Right,
                     0.0,
                 );
+                let path = match *label {
+                    "Ref" => "metadata.number",
+                    "Kind" => "metadata.kind",
+                    "Issued" => "metadata.issued",
+                    "Due" => "metadata.due",
+                    "Terms" => "metadata.terms",
+                    "Currency" => "metadata.currency",
+                    _ => "",
+                };
+                mark_text_items(&mut page, start, (!path.is_empty()).then(|| path.into()));
             }
             let header_bottom = content_top + header_h;
             push_rule(&mut page, left, header_bottom, width, r.tokens.rule);
@@ -3372,6 +3486,7 @@ fn build_positioned(
                     0.0,
                 );
                 let name_top = party_top + r.line_advance + g.label_gap;
+                let name_start = page.items.len();
                 let name_lines = push_wrapped_text!(
                     &mut page,
                     r,
@@ -3387,11 +3502,14 @@ fn build_positioned(
                     Align::Left,
                     0.0,
                 );
+                let party_root = if col == 0 { "from" } else { "bill_to" };
+                mark_text_items(&mut page, name_start, Some(format!("{party_root}.name")));
                 let mut py = name_top + name_lines as f32 * r.line_advance;
                 if let Some(image) = &party.logo {
                     if safe_http_url(&image.src).is_some()
                         || (image.src.contains(':') && !image.src.starts_with("data:image/"))
                     {
+                        let image_alt_start = page.items.len();
                         push_text!(
                             &mut page,
                             r,
@@ -3405,10 +3523,16 @@ fn build_positioned(
                             Align::Left,
                             0.0,
                         );
+                        mark_text_items(
+                            &mut page,
+                            image_alt_start,
+                            Some(format!("{party_root}.logo.alt")),
+                        );
                         py += g.line_detail + g.logo_gap;
                     }
                 }
-                for address in &party.address {
+                for (address_index, address) in party.address.iter().enumerate() {
+                    let address_start = page.items.len();
                     let lines = push_wrapped_text!(
                         &mut page,
                         r,
@@ -3424,12 +3548,15 @@ fn build_positioned(
                         Align::Left,
                         0.0,
                     );
+                    mark_text_items(
+                        &mut page,
+                        address_start,
+                        Some(format!("{party_root}.address[{address_index}]")),
+                    );
                     py += lines as f32 * r.line_advance;
                 }
-                if !party.identifiers.is_empty() {
-                    py += g.label_gap;
-                }
                 for id in &party.identifiers {
+                    let id_start = page.items.len();
                     let lines = push_wrapped_text!(
                         &mut page,
                         r,
@@ -3444,6 +3571,11 @@ fn build_positioned(
                         Face::Regular,
                         Align::Left,
                         0.0,
+                    );
+                    mark_text_items(
+                        &mut page,
+                        id_start,
+                        Some(format!("{party_root}.identifiers.{}", id.key)),
                     );
                     py += lines as f32 * r.line_advance;
                 }
@@ -3475,23 +3607,58 @@ fn build_positioned(
                             line: r.line_advance,
                         },
                     );
-                }
-                if !contact.is_empty() {
-                    let _ = push_wrapped_text!(
-                        &mut page,
-                        r,
-                        &contact,
-                        &[],
-                        px,
-                        py,
-                        party_width,
-                        body,
-                        r.line_advance,
-                        r.tokens.muted,
-                        Face::Regular,
-                        Align::Left,
-                        0.0,
-                    );
+                    let mut contact_x = px;
+                    if let Some(email) = &party.email {
+                        let start = page.items.len();
+                        push_text!(
+                            &mut page,
+                            r,
+                            email,
+                            contact_x,
+                            py,
+                            body,
+                            r.line_advance,
+                            r.tokens.muted,
+                            Face::Regular,
+                            Align::Left,
+                            0.0,
+                        );
+                        mark_text_items(&mut page, start, Some(format!("{party_root}.email")));
+                        contact_x += measure_text(email, r, body, false);
+                    }
+                    if let Some(website) = &party.website {
+                        if party.email.is_some() {
+                            push_text!(
+                                &mut page,
+                                r,
+                                " · ",
+                                contact_x,
+                                py,
+                                body,
+                                r.line_advance,
+                                r.tokens.muted,
+                                Face::Regular,
+                                Align::Left,
+                                0.0,
+                            );
+                            contact_x += measure_text(" · ", r, body, false);
+                        }
+                        let start = page.items.len();
+                        push_text!(
+                            &mut page,
+                            r,
+                            website,
+                            contact_x,
+                            py,
+                            body,
+                            r.line_advance,
+                            r.tokens.muted,
+                            Face::Regular,
+                            Align::Left,
+                            0.0,
+                        );
+                        mark_text_items(&mut page, start, Some(format!("{party_root}.website")));
+                    }
                 }
             }
         }
@@ -3600,7 +3767,15 @@ fn build_positioned(
                     if title != "Payment" {
                         push_rule(&mut page, left, y, width, r.tokens.rule);
                     }
+                    let notch_start = page.items.len();
                     push_notch(&mut page, r, title, left + r.geometry.notch_left, y);
+                    let section_title_path = rows.iter().find_map(|row| {
+                        row.edit_path
+                            .as_deref()
+                            .and_then(path_section_index)
+                            .map(|index| format!("sections[{index}].title"))
+                    });
+                    mark_text_items(&mut page, notch_start, section_title_path);
                     y += r.geometry.section_pad_top * r.density_space;
                     if title == "Payment" {
                         let box_h = 46.28 * r.density_space
@@ -3638,6 +3813,7 @@ fn build_positioned(
                         } else {
                             r.tokens.ink
                         };
+                        let start = page.items.len();
                         let rows_written = push_wrapped_text!(
                             &mut page,
                             r,
@@ -3653,6 +3829,7 @@ fn build_positioned(
                             Align::Left,
                             0.0,
                         );
+                        mark_text_items(&mut page, start, row.edit_path.clone());
                         let row_height = rows_written as f32 * r.line_advance;
                         if is_quote {
                             page.items.push(Placed {
@@ -3697,6 +3874,7 @@ fn build_positioned(
                     });
                     y += 23.14 * r.density_space;
                     for (method_index, method) in methods.iter().enumerate() {
+                        let title_start = page.items.len();
                         push_text!(
                             &mut page,
                             r,
@@ -3709,6 +3887,11 @@ fn build_positioned(
                             Face::Semibold,
                             Align::Left,
                             0.0,
+                        );
+                        mark_text_items(
+                            &mut page,
+                            title_start,
+                            Some(format!("payment.methods[{method_index}].title")),
                         );
                         y += r.line_advance + 4.13 * r.density_space;
                         for field in &method.fields {
@@ -3728,6 +3911,7 @@ fn build_positioned(
                                 0.0,
                             );
                             let value_x = inner_left + label_w + g.pay_dl_col_gap;
+                            let value_start = page.items.len();
                             let value_lines = push_wrapped_text!(
                                 &mut page,
                                 r,
@@ -3742,6 +3926,14 @@ fn build_positioned(
                                 Face::Regular,
                                 Align::Left,
                                 0.0,
+                            );
+                            mark_text_items(
+                                &mut page,
+                                value_start,
+                                Some(format!(
+                                    "payment.methods[{method_index}].fields.{}",
+                                    field.label
+                                )),
                             );
                             y += value_lines.saturating_sub(1) as f32 * r.line_advance;
                             y += r.line_advance + g.pay_dl_margin_top * r.density_space;
@@ -3767,6 +3959,7 @@ fn build_positioned(
                     gap,
                 } => {
                     y += g.sig_margin_top * r.density_space;
+                    let name_start = page.items.len();
                     push_text!(
                         &mut page,
                         r,
@@ -3780,6 +3973,8 @@ fn build_positioned(
                         Align::Left,
                         0.0,
                     );
+                    mark_text_items(&mut page, name_start, Some("signature.name".into()));
+                    let label_start = page.items.len();
                     push_text!(
                         &mut page,
                         r,
@@ -3793,6 +3988,7 @@ fn build_positioned(
                         Align::Left,
                         0.0,
                     );
+                    mark_text_items(&mut page, label_start, Some("signature.label".into()));
                     y += r.line_advance + g.sig_note_gap * r.density_space;
                     if let Some(image) = image {
                         page.items.push(Placed {
@@ -3804,11 +4000,13 @@ fn build_positioned(
                                 w: image.display_width,
                                 h: image.display_height,
                                 index: image_index,
+                                edit_path: Some("signature.image.alt".into()),
                             },
                         });
                         image_index += 1;
                         y += image.display_height + g.sig_note_gap * r.density_space;
                     } else if let Some(alt) = image_alt {
+                        let alt_start = page.items.len();
                         push_text!(
                             &mut page,
                             r,
@@ -3822,6 +4020,7 @@ fn build_positioned(
                             Align::Left,
                             0.0,
                         );
+                        mark_text_items(&mut page, alt_start, Some("signature.image.alt".into()));
                         y += g.line_detail + g.sig_note_gap * r.density_space;
                     }
                     y += f32::from(*gap) * r.line_advance;
@@ -3887,6 +4086,13 @@ fn build_positioned(
                             w: image.display_width,
                             h: image.display_height,
                             index: image_index,
+                            edit_path: if *owner == "From" {
+                                Some("from.logo.alt".into())
+                            } else if *owner == "Bill to" {
+                                Some("bill_to.logo.alt".into())
+                            } else {
+                                None
+                            },
                         },
                     });
                     image_index += 1;
@@ -3895,6 +4101,16 @@ fn build_positioned(
             }
         }
         for item in &mut page.items {
+            if let Primitive::Text {
+                edit_path: Some(path),
+                ..
+            } = &item.primitive
+            {
+                if let Some(node) = node_for_path(doc, path) {
+                    item.node = node;
+                    continue;
+                }
+            }
             item.node = match &item.primitive {
                 Primitive::Image { .. } => 3,
                 Primitive::Text { spans, .. } => {
@@ -3933,7 +4149,6 @@ fn build_positioned(
     }
     Ok(result)
 }
-
 fn content_width(r: &Resolved) -> f32 {
     r.geometry.page_w - 2.0 * f32::from(r.frame_inset) - 2.0 * r.geometry.gutter_x
 }
@@ -3946,6 +4161,7 @@ fn wrapped_row(row: &TextRow, runs: Vec<InlineRun>, preserve_link: bool) -> Text
         text,
         runs,
         link: preserve_link.then(|| row.link.clone()).flatten(),
+        edit_path: row.edit_path.clone(),
     }
 }
 fn expand_text_rows(rows: Vec<TextRow>, r: &Resolved) -> Result<Vec<TextRow>, RenderError> {
@@ -4030,6 +4246,7 @@ fn expand_text_rows(rows: Vec<TextRow>, r: &Resolved) -> Result<Vec<TextRow>, Re
                 text,
                 runs: current,
                 link: row.link,
+                edit_path: row.edit_path.clone(),
             });
         }
     }
@@ -4053,17 +4270,20 @@ fn party_block(
         text: p.name.clone(),
         runs: Vec::new(),
         link: None,
+        edit_path: None,
     }];
     rows.extend(p.address.iter().map(|x| TextRow {
         text: x.clone(),
         runs: Vec::new(),
         link: None,
+        edit_path: None,
     }));
     if let Some(x) = &p.email {
         rows.push(TextRow {
             text: x.clone(),
             runs: Vec::new(),
             link: safe_mailto(x),
+            edit_path: None,
         });
     }
     if let Some(x) = &p.website {
@@ -4071,12 +4291,14 @@ fn party_block(
             text: x.clone(),
             runs: Vec::new(),
             link: safe_http_url(x),
+            edit_path: None,
         });
     }
     rows.extend(p.identifiers.iter().map(|x| TextRow {
         text: format!("{} {}", x.key, x.value),
         runs: Vec::new(),
         link: None,
+        edit_path: None,
     }));
     let image = if let Some(i) = &p.logo {
         if let Some(image) = decode_asset(i, assets, image_budget)? {
@@ -4087,6 +4309,7 @@ fn party_block(
                 text: format!("[ img ] {}", i.alt),
                 runs: Vec::new(),
                 link: safe_http_url(&i.src),
+                edit_path: None,
             });
             None
         }
@@ -4102,6 +4325,7 @@ fn party_block(
 }
 fn section_block(
     s: &Section,
+    section_index: usize,
     doc: &Document,
     blocks: &mut Vec<Block>,
     assets: &[ResolvedAsset],
@@ -4121,6 +4345,7 @@ fn section_block(
                 },
                 runs: Vec::new(),
                 link: None,
+                edit_path: Some(format!("sections[{section_index}].prose")),
             }];
             blocks.push(Block::Text {
                 title: s.title.clone(),
@@ -4136,6 +4361,7 @@ fn section_block(
                 doc,
                 subtotal,
                 gap_value(s.directives.gap),
+                Some(section_index),
             ));
         }
     }
@@ -4156,6 +4382,7 @@ fn table_block(
     doc: &Document,
     total: Option<Decimal>,
     gap: u8,
+    section_index: Option<usize>,
 ) -> Block {
     let headings = t.headings.clone();
     let column_index = |terms: &[&str]| {
@@ -4174,7 +4401,9 @@ fn table_block(
     for source in &t.rows {
         let raw_cells = source.clone();
         let mut cells = raw_cells.clone();
+        let mut edit_paths = Vec::with_capacity(cells.len());
         for i in 0..cells.len() {
+            let mut computed = false;
             if (raw_cells[i].is_empty() || raw_cells[i].eq_ignore_ascii_case("auto"))
                 && Some(i) == amount
             {
@@ -4185,6 +4414,7 @@ fn table_block(
                     ) {
                         cells[i] =
                             format_money(q * rate, &doc.metadata.currency, &doc.config.format);
+                        computed = true;
                     }
                 }
             } else if let Ok(value) = raw_cells[i].parse::<Decimal>() {
@@ -4200,29 +4430,42 @@ fn table_block(
                     cells[i] = format_money(value, &doc.metadata.currency, &doc.config.format);
                 }
             }
+            edit_paths.push(if computed {
+                None
+            } else if let Some(n) = section_index {
+                Some(format!(
+                    "sections[{n}].table.rows[{}].cells[{i}]",
+                    rows.len()
+                ))
+            } else if title == "Settlements" {
+                Some(format!("settlements.rows[{}].cells[{i}]", rows.len()))
+            } else {
+                None
+            });
         }
-        rows.push(cells);
+        rows.push(TableRow {
+            cells,
+            alignments: t.alignments.clone(),
+            edit_paths,
+        });
     }
     if let Some(total) = total {
         let n = headings
             .len()
-            .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+            .max(rows.iter().map(|row| row.cells.len()).max().unwrap_or(0));
         let mut subtotal = vec![String::new(); n.max(1)];
         subtotal[0] = "Subtotal".into();
         subtotal[n.max(1) - 1] = format_money(total, &doc.metadata.currency, &doc.config.format);
-        rows.push(subtotal);
-    }
-    let trs = rows
-        .into_iter()
-        .map(|cells| TableRow {
-            cells,
+        rows.push(TableRow {
+            cells: subtotal,
             alignments: t.alignments.clone(),
-        })
-        .collect();
+            edit_paths: vec![None; n.max(1)],
+        });
+    }
     Block::Table {
         title: title.into(),
         headings,
-        rows: trs,
+        rows,
         gap,
     }
 }
@@ -4819,7 +5062,7 @@ fn encode_html(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                     }
                     o.push_str("</div>");
                 }
-                Primitive::Image { x, y, w, h, index } => {
+                Primitive::Image { x, y, w, h, index, .. } => {
                     if let Some(image) = plan.images.get(*index) {
                         o.push_str(&format!("<img class=\"primitive\" alt=\"{}\" src=\"data:image/{};base64,{}\" style=\"left:{x}px;top:{y}px;width:{w}px;height:{h}px;object-fit:contain;object-position:left bottom\">",
                             esc(&image.alt), esc(&image.mime), b64(image.bytes.as_ref())));
@@ -5073,7 +5316,9 @@ fn encode_pdf_positioned(plan: &Plan) -> Result<Vec<u8>, RenderError> {
                     surface.end_tagged();
                     tagged.push((placed.node, tag_id));
                 }
-                Primitive::Image { x, y, w, h, index } => {
+                Primitive::Image {
+                    x, y, w, h, index, ..
+                } => {
                     if let Some(image) = plan.images.get(*index) {
                         let img = match image.mime.as_str() {
                             "png" => krilla::Image::from_png(image.bytes.to_vec().into(), true),
@@ -5476,7 +5721,9 @@ fn encode_png_positioned(plan: &Plan) -> Result<(Vec<u8>, u32, u32), RenderError
                         pen += run_width;
                     }
                 }
-                Primitive::Image { x, y, w, h, index } => {
+                Primitive::Image {
+                    x, y, w, h, index, ..
+                } => {
                     if let Some(image) = plan.images.get(*index) {
                         draw_png_image_scaled!(&mut raw, width, base, scale, *x, *y, *w, *h, image);
                     }
@@ -5755,6 +6002,8 @@ fn draw_glyphs_png_face_scaled_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{execute, CommandOutcome, EditOperationInput, InvoiceCommand, Source};
+    use std::{borrow::Cow, collections::BTreeSet};
     const SOURCE: &str = include_str!("../../../render-compat/01-simple.md");
     #[test]
     fn formats_are_deterministic() {
@@ -5935,6 +6184,7 @@ mod tests {
                 text,
                 runs: Vec::new(),
                 link: None,
+                edit_path: None,
             }],
             &resolved,
         )
@@ -5950,6 +6200,7 @@ mod tests {
                 text: oversized,
                 runs: Vec::new(),
                 link: None,
+                edit_path: None,
             }],
             &resolved,
         );
@@ -6451,5 +6702,109 @@ mod tests {
         let mut format = prepared;
         format.format = RenderFormat::Pdf;
         assert!(render_prepared(&format).is_err());
+    }
+    #[test]
+    fn prepared_items_expose_editable_scalar_paths_and_real_nodes() {
+        let doc = document(SOURCE).unwrap();
+        let prepared = prepare_render(&doc, RenderOptions::default()).unwrap();
+        let paths: BTreeSet<String> = prepared
+            .pages
+            .iter()
+            .flat_map(|page| page.items.iter())
+            .filter_map(|item| item.edit_path.clone())
+            .collect();
+        let expected: BTreeSet<String> = [
+            "title",
+            "metadata.number",
+            "metadata.kind",
+            "metadata.issued",
+            "metadata.due",
+            "metadata.terms",
+            "metadata.currency",
+            "from.name",
+            "from.address[0]",
+            "from.address[1]",
+            "from.email",
+            "from.website",
+            "from.identifiers.VAT",
+            "bill_to.name",
+            "bill_to.address[0]",
+            "bill_to.address[1]",
+            "sections[0].title",
+            "sections[0].table.headings[0]",
+            "sections[0].table.headings[1]",
+            "sections[0].table.headings[2]",
+            "sections[0].table.headings[3]",
+            "sections[0].table.rows[0].cells[0]",
+            "sections[0].table.rows[0].cells[1]",
+            "sections[0].table.rows[0].cells[2]",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(paths, expected);
+        for item in prepared.pages.iter().flat_map(|page| page.items.iter()) {
+            if item.edit_path.is_some() {
+                assert_ne!(item.node, 0);
+            }
+            if matches!(
+                item.primitive,
+                PreparedPrimitive::Rect { .. }
+                    | PreparedPrimitive::Stroke { .. }
+                    | PreparedPrimitive::Rule { .. }
+                    | PreparedPrimitive::VRule { .. }
+            ) {
+                assert!(item.edit_path.is_none());
+            }
+        }
+        let revision = match execute(InvoiceCommand::Validate {
+            source: Source::Markdown(Cow::Borrowed(SOURCE)),
+        })
+        .unwrap()
+        {
+            CommandOutcome::Validated { revision, .. } => revision,
+            _ => panic!("validation returned the wrong outcome"),
+        };
+        for path in &paths {
+            let value = match path.as_str() {
+                "title" => "Simple consulting",
+                "metadata.number" => "INV-2026-101",
+                "metadata.kind" => "standard",
+                "metadata.issued" => "2026-01-15",
+                "metadata.due" => "2026-01-29",
+                "metadata.terms" => "Net 14",
+                "metadata.currency" => "EUR",
+                "from.name" => "Fictional Studio",
+                "from.address[0]" => "1 Example Street",
+                "from.address[1]" => "Example City",
+                "from.email" => "billing@example.com",
+                "from.website" => "https://studio.example",
+                "from.identifiers.VAT" => "EX000000000",
+                "bill_to.name" => "Example Client Ltd",
+                "bill_to.address[0]" => "2 Sample Road",
+                "bill_to.address[1]" => "Sample City",
+                "sections[0].title" => "Consulting fees",
+                "sections[0].table.headings[0]" => "Description",
+                "sections[0].table.headings[1]" => "Days",
+                "sections[0].table.headings[2]" => "Rate",
+                "sections[0].table.headings[3]" => "Amount (EUR)",
+                "sections[0].table.rows[0].cells[0]" => "Systems review",
+                "sections[0].table.rows[0].cells[1]" => "8",
+                "sections[0].table.rows[0].cells[2]" => "650.00",
+                _ => unreachable!("{path}"),
+            };
+            let edited = execute(InvoiceCommand::Edit {
+                source: Source::Markdown(Cow::Borrowed(SOURCE)),
+                base_revision: Cow::Borrowed(&revision),
+                operation: EditOperationInput::SetScalar {
+                    path: Cow::Borrowed(path),
+                    value: Cow::Borrowed(value),
+                },
+            });
+            assert!(
+                matches!(edited, Ok(CommandOutcome::Edited { .. })),
+                "{path}"
+            );
+        }
     }
 }
