@@ -871,6 +871,10 @@ fn outcome_schema() -> serde_json::Value {
         "type":"array", "items":{"type":"integer","minimum":0,"maximum":255},
         "minItems":32, "maxItems":32
     });
+    defs.insert("canonical_float".into(), serde_json::json!({
+        "type":"number",
+        "description":"Renderer float wire value: exact IEEE-754 binary32 promoted to binary64, with one shortest JSON spelling (integral values omit .0)."
+    }));
     defs.insert(
         "diagnostic".into(),
         object(
@@ -1132,14 +1136,21 @@ fn outcome_schema() -> serde_json::Value {
             "color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}
         }),
     ));
+    defs.insert(
+        "prepared_node".into(),
+        object(
+            &["role", "label"],
+            serde_json::json!({"role":{"type":"string"},"label":{"type":"string"}}),
+        ),
+    );
     defs.insert("prepared_primitive".into(), serde_json::json!({
         "oneOf":[
-            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","fill"],"properties":{"kind":{"const":"rect"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number","minimum":0},"h":{"type":"number","minimum":0},"fill":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
-            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","dash","color"],"properties":{"kind":{"const":"stroke"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number"},"h":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
-            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","dash","color"],"properties":{"kind":{"const":"rule"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
-            {"type":"object","additionalProperties":false,"required":["kind","x","y","h","dash","color"],"properties":{"kind":{"const":"v_rule"},"x":{"type":"number"},"y":{"type":"number"},"h":{"type":"number"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
-            {"type":"object","additionalProperties":false,"required":["kind","x","baseline","size","align","advance","tracking","spans"],"properties":{"kind":{"const":"text"},"x":{"type":"number"},"baseline":{"type":"number"},"size":{"type":"number","minimum":0},"align":{"enum":["left","center","right"]},"advance":{"type":"number"},"tracking":{"type":"number"},"spans":{"type":"array","items":{"$ref":"#/$defs/prepared_span"}}}},
-            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","index"],"properties":{"kind":{"const":"image"},"x":{"type":"number"},"y":{"type":"number"},"w":{"type":"number","minimum":0},"h":{"type":"number","minimum":0},"index":{"type":"integer","minimum":0}}}
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","fill"],"properties":{"kind":{"const":"rect"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"w":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"h":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"fill":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","dash","color"],"properties":{"kind":{"const":"stroke"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"w":{"$ref":"#/$defs/canonical_float"},"h":{"$ref":"#/$defs/canonical_float"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","dash","color"],"properties":{"kind":{"const":"rule"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"w":{"$ref":"#/$defs/canonical_float"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","h","dash","color"],"properties":{"kind":{"const":"v_rule"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"h":{"$ref":"#/$defs/canonical_float"},"dash":{"enum":["solid","dashed"]},"color":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","baseline","size","align","advance","tracking","spans"],"properties":{"kind":{"const":"text"},"x":{"$ref":"#/$defs/canonical_float"},"baseline":{"$ref":"#/$defs/canonical_float"},"size":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"align":{"enum":["left","center","right"]},"advance":{"$ref":"#/$defs/canonical_float"},"tracking":{"$ref":"#/$defs/canonical_float"},"spans":{"type":"array","items":{"$ref":"#/$defs/prepared_span"}}}},
+            {"type":"object","additionalProperties":false,"required":["kind","x","y","w","h","index"],"properties":{"kind":{"const":"image"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"w":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"h":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"index":{"type":"integer","minimum":0}}}
         ]
     }));
     defs.insert("prepared_item".into(), object(
@@ -1148,23 +1159,16 @@ fn outcome_schema() -> serde_json::Value {
     ));
     defs.insert("prepared_link".into(), object(
         &["href", "label", "x", "y", "width", "height"],
-        serde_json::json!({"href":{"type":"string"},"label":{"type":"string"},"x":{"type":"number"},"y":{"type":"number"},"width":{"type":"number","minimum":0},"height":{"type":"number","minimum":0}}),
+        serde_json::json!({"href":{"type":"string"},"label":{"type":"string"},"x":{"$ref":"#/$defs/canonical_float"},"y":{"$ref":"#/$defs/canonical_float"},"width":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"height":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]}}),
     ));
     defs.insert("prepared_image".into(), object(
         &["alt", "mime", "bytes", "width", "height", "display_width", "display_height"],
-        serde_json::json!({"alt":{"type":"string"},"mime":{"type":"string"},"bytes":bytes,"width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"display_width":{"type":"number","minimum":0},"display_height":{"type":"number","minimum":0}}),
+        serde_json::json!({"alt":{"type":"string"},"mime":{"type":"string"},"bytes":bytes,"width":{"type":"integer","minimum":0},"height":{"type":"integer","minimum":0},"display_width":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"display_height":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]}}),
     ));
     defs.insert("prepared_page".into(), object(
         &["items", "links", "blocks"],
         serde_json::json!({"items":{"type":"array","items":{"$ref":"#/$defs/prepared_item"}},"links":{"type":"array","items":{"$ref":"#/$defs/prepared_link"}},"blocks":{"type":"array","items":{"$ref":"#/$defs/prepared_block"}}}),
     ));
-    defs.insert(
-        "prepared_node".into(),
-        object(
-            &["role", "label"],
-            serde_json::json!({"role":{"type":"string"},"label":{"type":"string"}}),
-        ),
-    );
     defs.insert("prepared_party".into(), object(
         &["name", "address", "email", "website", "identifiers", "logo_alt"],
         serde_json::json!({"name":{"type":"string"},"address":{"type":"array","items":{"type":"string"}},"email":{"type":["string","null"]},"website":{"type":["string","null"]},"identifiers":{"type":"array","items":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"logo_alt":{"type":["string","null"]}}),
@@ -1185,9 +1189,9 @@ fn outcome_schema() -> serde_json::Value {
             "source_revision":{"type":"string"},"plan_digest":digest,"tokens":{"$ref":"#/$defs/theme_tokens"},
             "accent":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":3,"maxItems":3},
             "font":{"type":"string"},"font_weight":{"enum":["regular","semibold"]},"font_scale":{"type":"integer","minimum":100,"maximum":140},
-            "density_space":{"type":"number","minimum":0},"png_scale":{"type":"integer","minimum":1,"maximum":2},
-            "line_advance":{"type":"number","minimum":0},"upem":{"type":"number","minimum":0},"ascender":{"type":"number"},
-            "descender":{"type":"number"},"advance":{"type":"number","minimum":0},"tree":{"type":"array","items":{"$ref":"#/$defs/prepared_node"}},
+            "density_space":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"png_scale":{"type":"integer","minimum":1,"maximum":2},
+            "line_advance":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"upem":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"ascender":{"$ref":"#/$defs/canonical_float"},
+            "descender":{"$ref":"#/$defs/canonical_float"},"advance":{"allOf":[{"$ref":"#/$defs/canonical_float"},{"minimum":0}]},"tree":{"type":"array","items":{"$ref":"#/$defs/prepared_node"}},
             "semantic":{"$ref":"#/$defs/prepared_semantic"}
         }),
     ));
@@ -1204,15 +1208,15 @@ fn outcome_schema() -> serde_json::Value {
     ));
     defs.insert("presentation_accent".into(), object(
         &["authored", "resolved", "corrected", "ratio", "steps"],
-        serde_json::json!({"authored":{"type":["string","null"]},"resolved":{"type":"string"},"corrected":{"type":"boolean"},"ratio":{"type":"number"},"steps":{"type":"integer","minimum":0}}),
+        serde_json::json!({"authored":{"type":["string","null"]},"resolved":{"type":"string"},"corrected":{"type":"boolean"},"ratio":{"$ref":"#/$defs/canonical_float"},"steps":{"type":"integer","minimum":0}}),
     ));
     defs.insert("presentation_scale".into(), object(
         &["type", "density_space", "space", "leading"],
-        serde_json::json!({"type":{"type":"number"},"density_space":{"type":"number"},"space":{"type":"number"},"leading":{"type":"number"}}),
+        serde_json::json!({"type":{"$ref":"#/$defs/canonical_float"},"density_space":{"$ref":"#/$defs/canonical_float"},"space":{"$ref":"#/$defs/canonical_float"},"leading":{"$ref":"#/$defs/canonical_float"}}),
     ));
     defs.insert("presentation_content".into(), object(
         &["left", "right", "top", "bottom"],
-        serde_json::json!({"left":{"type":"number"},"right":{"type":"number"},"top":{"type":"number"},"bottom":{"type":"number"}}),
+        serde_json::json!({"left":{"$ref":"#/$defs/canonical_float"},"right":{"$ref":"#/$defs/canonical_float"},"top":{"$ref":"#/$defs/canonical_float"},"bottom":{"$ref":"#/$defs/canonical_float"}}),
     ));
     defs.insert("presentation_font".into(), object(
         &["id", "weight", "semibold_weight"],
@@ -1224,7 +1228,7 @@ fn outcome_schema() -> serde_json::Value {
             "tokens":{"$ref":"#/$defs/presentation_tokens"},"accent":{"$ref":"#/$defs/presentation_accent"},
             "font":{"$ref":"#/$defs/presentation_font"},"scale":{"$ref":"#/$defs/presentation_scale"},
             "frame_inset":{"type":"integer","minimum":30,"maximum":60},"content":{"$ref":"#/$defs/presentation_content"},
-            "geometry":{"type":"object","additionalProperties":{"type":"number"}}
+            "geometry":{"type":"object","additionalProperties":{"$ref":"#/$defs/canonical_float"}}
         }),
     ));
     defs.insert("presentation_config".into(), object(

@@ -82,6 +82,15 @@ and output hash.
 Rendering never fetches external assets. Images must be bounded asset bytes supplied by
 the adapter and validated by the executor. Invalid documents, options, assets, and
 oversize output return typed `CommandError` values.
+All floating-point fields in `Presentation` and `PreparedRender` use one canonical
+wire representation: the renderer computes an IEEE-754 binary32 value, then
+promotes that value exactly to IEEE-754 binary64 at the serialization boundary.
+The resulting JSON number uses one shortest spelling (integral values are emitted
+without a trailing `.0`; for example, binary32 `770.65` serializes as
+`770.6500244140625`) and is emitted identically by every adapter. This promotion
+preserves layout fidelity and is part of the wire contract; adapters MUST NOT
+round, truncate, or otherwise normalize these numbers. `PreparedRender.plan_digest`
+is computed over this canonical serialization.
 
 ## Command-envelope transport
 

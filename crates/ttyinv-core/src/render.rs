@@ -26,6 +26,60 @@ use std::{cell::RefCell, fmt, io::Cursor, num::NonZeroU16, rc::Rc, sync::Arc};
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/render_fonts.rs"));
 }
+/// Wire serializer for renderer f32 values.
+///
+/// The renderer computes in binary32 for layout fidelity. At the wire boundary,
+/// each value is promoted exactly to binary64 and encoded with one canonical
+/// shortest JSON spelling. Integral values use the integer serializer so
+/// serde_json and serde-wasm-bindgen both emit `1` rather than adapter-specific
+/// `1.0`/`1` spellings; fractional values use `serialize_f64`.
+pub(crate) mod canonical_float {
+    use serde::Serializer;
+
+    pub fn serialize<S>(value: &f32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = f64::from(*value);
+        if value.is_finite()
+            && value.fract() == 0.0
+            && value >= -(1_i64 << 53) as f64
+            && value <= (1_i64 << 53) as f64
+        {
+            serializer.serialize_i64(value as i64)
+        } else {
+            serializer.serialize_f64(value)
+        }
+    }
+}
+
+mod canonical_float_map {
+    use super::canonical_float;
+    use serde::{ser::SerializeMap, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S>(values: &BTreeMap<String, f32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(values.len()))?;
+        for (name, value) in values {
+            map.serialize_entry(name, &CanonicalFloat(*value))?;
+        }
+        map.end()
+    }
+
+    struct CanonicalFloat(f32);
+
+    impl serde::Serialize for CanonicalFloat {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            canonical_float::serialize(&self.0, serializer)
+        }
+    }
+}
 mod krilla {
     pub use krilla::image::Image;
     pub use krilla::*;
@@ -368,22 +422,30 @@ pub struct PresentationAccent {
     pub authored: Option<String>,
     pub resolved: String,
     pub corrected: bool,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub ratio: f32,
     pub steps: u8,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresentationScale {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", serialize_with = "canonical_float::serialize")]
     pub type_scale: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub density_space: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub space: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub leading: f32,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PresentationContent {
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub left: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub right: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub top: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub bottom: f32,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,6 +462,7 @@ pub struct Presentation {
     pub scale: PresentationScale,
     pub frame_inset: u8,
     pub content: PresentationContent,
+    #[serde(serialize_with = "canonical_float_map::serialize")]
     pub geometry: std::collections::BTreeMap<String, f32>,
 }
 fn hex(c: [u8; 3]) -> String {
@@ -829,12 +892,18 @@ pub struct PreparedRender {
     pub font: String,
     pub font_weight: crate::FontWeight,
     pub font_scale: u8,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub density_space: f32,
     pub png_scale: u8,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub line_advance: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub upem: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub ascender: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub descender: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub advance: f32,
     pub tree: Vec<PreparedNode>,
     pub semantic: PreparedSemantic,
@@ -919,9 +988,13 @@ pub struct PreparedItem {
 pub struct PreparedLink {
     pub href: String,
     pub label: String,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub x: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub y: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub width: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub height: f32,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -931,7 +1004,9 @@ pub struct PreparedImage {
     pub bytes: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub display_width: f32,
+    #[serde(serialize_with = "canonical_float::serialize")]
     pub display_height: f32,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -947,47 +1022,70 @@ pub struct PreparedSpan {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PreparedPrimitive {
     Rect {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         y: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         w: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         h: f32,
         fill: [u8; 3],
     },
     Stroke {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         y: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         w: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         h: f32,
         dash: String,
         color: [u8; 3],
     },
     Rule {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         y: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         w: f32,
         dash: String,
         color: [u8; 3],
     },
     VRule {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         y: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         h: f32,
         dash: String,
         color: [u8; 3],
     },
     Text {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         baseline: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         size: f32,
         align: String,
+        #[serde(serialize_with = "canonical_float::serialize")]
         advance: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         tracking: f32,
         spans: Vec<PreparedSpan>,
     },
     Image {
+        #[serde(serialize_with = "canonical_float::serialize")]
         x: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         y: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         w: f32,
+        #[serde(serialize_with = "canonical_float::serialize")]
         h: f32,
         index: usize,
     },
@@ -5889,6 +5987,25 @@ mod tests {
         assert_eq!(p.accent.resolved, "#3c8f89");
         assert_eq!(p.content.left, 65.57);
         assert_eq!(p.geometry["hairline"], 0.83);
+    }
+    #[test]
+    fn renderer_float_wire_values_are_exact_promoted_binary32() {
+        let presentation = presentation(PresentationConfig::default()).unwrap();
+        let encoded = serde_json::to_string(&presentation).unwrap();
+        assert!(encoded.contains("\"bottom\":770.6500244140625"));
+        assert!(encoded.contains("\"space\":1"));
+
+        let primitive = PreparedPrimitive::Rect {
+            x: 770.65_f32,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            fill: [0, 0, 0],
+        };
+        assert_eq!(
+            serde_json::to_string(&primitive).unwrap(),
+            r#"{"kind":"rect","x":770.6500244140625,"y":0,"w":1,"h":1,"fill":[0,0,0]}"#
+        );
     }
     #[test]
     fn png_scale_changes_device_dimensions_only() {
