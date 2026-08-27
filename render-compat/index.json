@@ -160,6 +160,15 @@
         "density id",
         "font id"
       ]
+    },
+    {
+      "id": "18-foreign-currency-columns",
+      "source": "18-foreign-currency-columns.md",
+      "expected": "18-foreign-currency-columns.json",
+      "features": [
+        "foreign-currency amount column",
+        "payable amount column"
+      ]
     }
   ]
 }

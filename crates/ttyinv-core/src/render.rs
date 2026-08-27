@@ -4428,15 +4428,7 @@ fn table_block(
                     }
                 }
             } else if let Ok(value) = raw_cells[i].parse::<Decimal>() {
-                let heading = headings
-                    .get(i)
-                    .map(|h| h.to_ascii_lowercase())
-                    .unwrap_or_default();
-                if Some(i) == amount
-                    || heading.contains("amount")
-                    || heading.contains("rate")
-                    || heading.contains("price")
-                {
+                if Some(i) == amount {
                     cells[i] = format_money(value, &doc.metadata.currency, &doc.config.format);
                 }
             }
@@ -6077,6 +6069,26 @@ mod tests {
         );
     }
     #[test]
+    fn foreign_currency_columns_remain_authored() {
+        let source = include_str!("../../../render-compat/18-foreign-currency-columns.md");
+        let html = String::from_utf8(
+            render(
+                source,
+                RenderOptions {
+                    format: RenderFormat::Html,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .bytes,
+        )
+        .unwrap();
+        assert!(html.contains("7100.00"));
+        assert!(!html.contains("EUR\u{a0}7,100.00"));
+        assert!(html.contains("EUR\u{a0}12.70"));
+        assert!(html.contains("EUR\u{a0}5,200.00"));
+    }
+    #[test]
     fn inline_semantics_are_shared_and_safe() {
         let source = "**bold** *em* `code` [docs](https://example.com)  \nnext";
         let html = inline_html(source);
@@ -6588,6 +6600,8 @@ mod tests {
                 let footer_html = String::from_utf8(footer_result.bytes).unwrap();
                 assert!(footer_html.contains("Payment"));
                 assert!(footer_html.contains("Settlements"));
+                assert!(footer_html.contains("<td>1000.00</td>"));
+                assert!(!footer_html.contains("EUR\u{a0}1,000.00"));
             }
         }
         let signature_source = include_str!("../../../render-compat/09-signature-image.md");
