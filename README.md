@@ -62,14 +62,21 @@ blocks, ordinary H2 sections, and optional fixed footer blocks. Ordinary section
 one table or prose body. Immediately preceding `ttyinv` directives move with ordinary
 sections.
 
-Configuration IDs are explicit and stable. The default theme is `printable`. The default
-font is `geist-mono`, with base `font-weight` defaulting to `regular` (`regular` or
-`semibold`). Optional `accent` uses strict lowercase `#rrggbb` syntax; when absent,
-adapters use the theme accent. `font-scale` defaults to `100` and accepts integer
-percentages from `100` through `140`. `frame-inset` defaults to `54` and accepts integer
-layout units from `30` through `60`. The UI may use five-point font-scale steps. These
-fields configure adapters; headings and strong text remain semibold. See [SPEC.md](SPEC.md)
-for all supported IDs and grammar rules.
+Configuration IDs are explicit and stable. The default theme is `printable`. The
+default font is `geist-mono`, with base `font-weight` defaulting to `regular`
+(`regular` or `semibold`). `density` defaults to `comfortable`. `amount-in-words`
+defaults to `false`. Optional `accent` uses strict lowercase `#rrggbb` syntax;
+when absent, adapters use the theme accent. `font-scale` defaults to `100` and
+accepts integer percentages from `100` through `140`. `frame-inset` defaults to
+`54` and accepts integer layout units from `30` through `60`. Markdown uses
+`font-weight`, `amount-in-words`, `font-scale`, and `frame-inset`; JSON and YAML
+DTOs use `font_weight`, `amount_in_words`, `font_scale`, and `frame_inset`. The UI
+may use five-point font-scale steps. The Rust core resolves these fields; headings
+and strong text remain semibold. See [SPEC.md](SPEC.md) for all supported IDs and
+grammar rules.
+
+The Rust core limits rendered output to 64 MiB, and WASM uses the same limit.
+Adapters may apply smaller transport limits after core execution.
 
 ## Canonical example
 

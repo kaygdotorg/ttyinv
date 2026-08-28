@@ -76,22 +76,14 @@ where
         where
             E: de::Error,
         {
-            decode_asset_base64(value)
-                .map(Cow::Owned)
-                .map_err(E::custom)
+            Ok(Cow::Owned(value.to_vec()))
         }
 
         fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
         where
             E: de::Error,
         {
-            if value.is_ascii() {
-                decode_asset_base64(value)
-                    .map(Cow::Owned)
-                    .map_err(E::custom)
-            } else {
-                Ok(Cow::Owned(value.to_vec()))
-            }
+            Ok(Cow::Owned(value.to_vec()))
         }
 
         fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
@@ -392,7 +384,7 @@ pub struct DraftTable<'a> {
     pub rows: Vec<Vec<Text<'a>>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum DraftSectionBody<'a> {
     Prose(Text<'a>),
     Table(DraftTable<'a>),
@@ -668,8 +660,15 @@ pub struct SafeStructure {
     pub sections: Vec<SafeSection>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SafeFixedBlock {
+    pub name: String,
+    pub present: bool,
+    pub movable: bool,
+    pub page_break_before: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SafeManifest {
-    pub fixed_blocks: Vec<String>,
+    pub fixed_blocks: Vec<SafeFixedBlock>,
     pub sections: Vec<SafeSection>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1219,11 +1218,23 @@ fn outcome_schema() -> serde_json::Value {
         }),
     ));
     defs.insert(
+        "safe_fixed_block".into(),
+        object(
+            &["name", "present", "movable", "page_break_before"],
+            serde_json::json!({
+                "name":{"type":"string"},
+                "present":{"type":"boolean"},
+                "movable":{"type":"boolean"},
+                "page_break_before":{"type":"boolean"}
+            }),
+        ),
+    );
+    defs.insert(
         "safe_manifest".into(),
         object(
             &["fixed_blocks", "sections"],
             serde_json::json!({
-                "fixed_blocks":{"type":"array","items":{"type":"string"}},
+                "fixed_blocks":{"type":"array","items":{"$ref":"#/$defs/safe_fixed_block"}},
                 "sections":{"type":"array","items":{"$ref":"#/$defs/safe_section"}}
             }),
         ),
@@ -1808,7 +1819,12 @@ fn safe_manifest(d: &Document) -> SafeManifest {
             .structure_manifest()
             .fixed_blocks
             .into_iter()
-            .map(|x| x.name)
+            .map(|x| SafeFixedBlock {
+                name: x.name,
+                present: x.present,
+                movable: x.movable,
+                page_break_before: x.page_break_before,
+            })
             .collect(),
         sections: d
             .ordinary_sections
@@ -2143,6 +2159,7 @@ mod tests {
     struct AssetWire<'a> {
         bytes: &'a [u8],
         sequence: bool,
+        borrowed: bool,
     }
 
     struct AssetSequence<'a>(std::slice::Iter<'a, u8>);
@@ -2170,6 +2187,8 @@ mod tests {
         {
             if self.sequence {
                 visitor.visit_seq(AssetSequence(self.bytes.iter()))
+            } else if self.borrowed {
+                visitor.visit_borrowed_bytes(self.bytes)
             } else {
                 visitor.visit_bytes(self.bytes)
             }
@@ -2188,6 +2207,8 @@ mod tests {
         {
             if self.sequence {
                 visitor.visit_seq(AssetSequence(self.bytes.iter()))
+            } else if self.borrowed {
+                visitor.visit_borrowed_bytes(self.bytes)
             } else {
                 visitor.visit_bytes(self.bytes)
             }
@@ -2212,14 +2233,29 @@ mod tests {
         let byte_array = deserialize_asset_bytes(AssetWire {
             bytes: PNG,
             sequence: false,
+            borrowed: false,
         })
         .expect("byte array");
+        let raw_ascii = deserialize_asset_bytes(AssetWire {
+            bytes: b"QUJD",
+            sequence: false,
+            borrowed: false,
+        })
+        .expect("raw ASCII bytes");
+        assert_eq!(raw_ascii.as_ref(), b"QUJD");
+        let borrowed_ascii = deserialize_asset_bytes(AssetWire {
+            bytes: b"QUJD",
+            sequence: false,
+            borrowed: true,
+        })
+        .expect("raw borrowed ASCII bytes");
+        assert_eq!(borrowed_ascii.as_ref(), b"QUJD");
         let sequence = deserialize_asset_bytes(AssetWire {
             bytes: PNG,
             sequence: true,
+            borrowed: false,
         })
         .expect("numeric sequence");
-        assert_eq!(byte_array, sequence);
         const BASE64: &str =
             "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAMklEQVR42mO4oFLwH4RxAQYQgU8RA4yBSxEDMgebIgZ0HeiKUNyAjgkqAGGG/3gASAEAt9XYqbF4bnYAAAAASUVORK5CYII=";
         let encoded = format!(

@@ -3641,9 +3641,7 @@ fn build_positioned(
                 mark_text_items(&mut page, name_start, Some(format!("{party_root}.name")));
                 let mut py = name_top + name_lines as f32 * r.line_advance;
                 if let Some(image) = &party.logo {
-                    if safe_http_url(&image.src).is_some()
-                        || (image.src.contains(':') && !image.src.starts_with("data:image/"))
-                    {
+                    if is_external_asset_source(&image.src) {
                         let image_alt_start = page.items.len();
                         push_text!(
                             &mut page,
@@ -4782,6 +4780,9 @@ fn inline_runs(s: &str) -> Vec<InlineRun> {
     }
     out
 }
+pub fn is_external_asset_source(s: &str) -> bool {
+    safe_http_url(s).is_some() || (s.contains(':') && !s.starts_with("data:image/"))
+}
 fn safe_http_url(s: &str) -> Option<String> {
     let value = s.trim();
     if value.bytes().any(|b| b.is_ascii_control()) {
@@ -4897,9 +4898,7 @@ fn decode_asset(
     assets: &[ResolvedAsset],
     image_budget: &mut usize,
 ) -> Result<Option<ImageItem>, RenderError> {
-    if safe_http_url(&image.src).is_some()
-        || (image.src.contains(':') && !image.src.starts_with("data:image/"))
-    {
+    if is_external_asset_source(&image.src) {
         return Ok(None);
     }
     let (bytes, hinted): (Arc<[u8]>, Option<String>) = if let Some(asset) =

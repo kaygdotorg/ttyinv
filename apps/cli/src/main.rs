@@ -20,11 +20,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use ttyinv_cli::exit;
 use ttyinv_core::{
-    execute, invalid_command_message, CanonicalFormat, CommandError, CommandErrorCode,
-    CommandOutcome, Diagnostic, Document, EditOperationInput, FontWeight, InspectMode,
-    InvoiceCommand, InvoiceDraft, PresentationConfigInput, RenderAssetInput, RenderFormat,
-    RenderOptionsInput, RetryClass, Severity, Source, MAX_ASSET_BYTES, MAX_SOURCE_BYTES,
-    PAGE_WIDTH,
+    execute, invalid_command_message, is_external_asset_source, CanonicalFormat, CommandError,
+    CommandErrorCode, CommandOutcome, Diagnostic, Document, EditOperationInput, FontWeight,
+    InspectMode, InvoiceCommand, InvoiceDraft, PresentationConfigInput, RenderAssetInput,
+    RenderFormat, RenderOptionsInput, RetryClass, Severity, Source, MAX_ASSET_BYTES,
+    MAX_SOURCE_BYTES, PAGE_WIDTH,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -353,11 +353,15 @@ fn parse_format(value: &str) -> Option<InputFormat> {
 }
 
 fn auto_format(path: &str) -> Option<InputFormat> {
+    if path == "-" {
+        return None;
+    }
     match Path::new(path).extension().and_then(|x| x.to_str()) {
         Some("md") => Some(InputFormat::Markdown),
         Some("json") => Some(InputFormat::Json),
         Some("yaml" | "yml") => Some(InputFormat::Yaml),
-        _ => None,
+        Some("") | None => Some(InputFormat::Markdown),
+        Some(_) => None,
     }
 }
 
@@ -560,11 +564,7 @@ fn with_local_assets(
     let mut seen = HashSet::new();
     for image in document_images(document) {
         let source = image.src.trim();
-        if source.is_empty()
-            || source.starts_with("data:")
-            || source.starts_with("http://")
-            || source.starts_with("https://")
-        {
+        if source.is_empty() || is_external_asset_source(source) {
             continue;
         }
         let path = Path::new(source);
@@ -1576,7 +1576,7 @@ fn inspect_cmd(a: &[String], sections_alias: bool) -> i32 {
                 InspectMode::Manifest => {
                     if let Some(value) = manifest {
                         for block in value.fixed_blocks {
-                            println!("fixed\t{block}");
+                            println!("fixed\t{}", block.name);
                         }
                         print_sections_text(&value.sections);
                     }

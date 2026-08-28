@@ -901,3 +901,130 @@ fn appearance_canonical_order_adapters_and_edits() {
     let inserted_density = inserted.source.find("density:").expect("density");
     assert!(inserted_font < inserted_weight && inserted_weight < inserted_density);
 }
+
+#[test]
+fn create_accepts_published_plain_and_table_section_bodies() {
+    let command: InvoiceCommand<'_> = serde_json::from_str(
+        r#"{
+            "kind":"create",
+            "draft":{
+                "title":"Created invoice",
+                "metadata":{"number":"INV-1","issued":"2026-01-01","currency":"EUR"},
+                "from":{"name":"Seller"},
+                "bill_to":{"name":"Buyer"},
+                "ordinary_sections":[
+                    {"title":"Notes","body":"Plain prose"},
+                    {"title":"Items","body":{"headings":["Description","Amount"],"rows":[["Work","10.00"]]}}
+                ]
+            }
+        }"#,
+    )
+    .expect("published draft body wire format");
+    let created = execute(command).expect("create");
+    assert!(matches!(created, CommandOutcome::Created { .. }));
+}
+
+#[test]
+fn fenced_pipe_lines_remain_prose() {
+    let source = SOURCE.replace(
+        "Payment is due within fourteen days.",
+        "```text\n| not a table |\n| still code |\n```\n",
+    );
+    let doc = document(&source).expect("fenced pipes are prose");
+    assert!(matches!(
+        &doc.ordinary_sections[1].body,
+        SectionBody::Prose(_)
+    ));
+}
+
+#[test]
+fn fenced_pipe_lines_do_not_make_a_table_mixed_prose() {
+    let source = SOURCE.replace(
+        "| Systems consulting | 8 | 650.00 | auto |\n",
+        "| Systems consulting | 8 | 650.00 | auto |\n\n```text\n| code |\n```\n",
+    );
+    let doc = document(&source).expect("fenced pipes are ignored by table parsing");
+    assert!(matches!(
+        &doc.ordinary_sections[0].body,
+        SectionBody::Table(_)
+    ));
+}
+#[test]
+fn structured_bytes_and_nulls_follow_typed_wire_contract() {
+    let json = to_json(&document(SOURCE).expect("source")).expect("JSON");
+    let optional_null = json.replace("\"terms\": \"Net 14\"", "\"terms\": null");
+    assert!(optional_null.contains("\"terms\": null"));
+    assert!(
+        parse_json(&optional_null).is_ok(),
+        "Option fields accept null"
+    );
+    let required_null = json.replace("\"title\": \"Consulting services\"", "\"title\": null");
+    assert!(required_null.contains("\"title\": null"));
+    assert!(
+        parse_json(&required_null).is_err(),
+        "required fields refuse null"
+    );
+
+    let yaml = to_yaml(&document(SOURCE).expect("source")).expect("YAML");
+    let optional_yaml_null = yaml.replace("terms: Net 14", "terms:");
+    assert!(optional_yaml_null.contains("terms:"));
+    assert!(
+        parse_yaml(&optional_yaml_null).is_ok(),
+        "YAML Option accepts null"
+    );
+    let required_yaml_null = yaml.replace("title: Consulting services", "title:");
+    assert!(required_yaml_null.contains("title:"));
+    assert!(
+        parse_yaml(&required_yaml_null).is_err(),
+        "YAML required null refuses"
+    );
+
+    let bytes: ttyinv_core::RenderOptionsInput<'_> = serde_json::from_str(
+        r#"{"format":"html","assets":[{"source":"asset.bin","bytes":"QUJD"},{"source":"raw.bin","bytes":[81,85,74,68]}]}"#,
+    )
+    .expect("asset input");
+    assert_eq!(bytes.assets[0].bytes.as_ref(), b"ABC");
+    assert_eq!(bytes.assets[1].bytes.as_ref(), b"QUJD");
+}
+
+#[test]
+fn manifest_retains_fixed_block_metadata() {
+    let outcome = execute(InvoiceCommand::Inspect {
+        source: Source::Markdown(Cow::Borrowed(SOURCE)),
+        mode: ttyinv_core::InspectMode::Manifest,
+    })
+    .expect("manifest");
+    let CommandOutcome::Inspected {
+        manifest: Some(manifest),
+        ..
+    } = outcome
+    else {
+        panic!("expected manifest outcome");
+    };
+    let from = manifest
+        .fixed_blocks
+        .iter()
+        .find(|block| block.name == "from")
+        .expect("from block");
+    assert!(from.present);
+    assert!(!from.movable);
+    assert!(!from.page_break_before);
+    let settlements = manifest
+        .fixed_blocks
+        .iter()
+        .find(|block| block.name == "settlements")
+        .expect("settlements block");
+    assert!(!settlements.present);
+}
+
+#[test]
+fn external_asset_source_predicate_matches_renderer_semantics() {
+    assert!(ttyinv_core::is_external_asset_source(
+        "HTTP://example.com/a.png"
+    ));
+    assert!(ttyinv_core::is_external_asset_source("custom-scheme:value"));
+    assert!(!ttyinv_core::is_external_asset_source(
+        "data:image/png;base64,QUJD"
+    ));
+    assert!(!ttyinv_core::is_external_asset_source("local.png"));
+}

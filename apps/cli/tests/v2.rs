@@ -225,8 +225,9 @@ fn convert_round_trips_structured_formats_and_validates_by_extension() {
 }
 
 #[test]
-fn adapters_require_known_input_or_explicit_from_and_help_is_available() {
-    let unknown = std::env::temp_dir().join(format!("ttyinv-v2-unknown-{}", std::process::id()));
+fn adapters_require_known_extension_or_explicit_from() {
+    let unknown =
+        std::env::temp_dir().join(format!("ttyinv-v2-unknown-{}.txt", std::process::id()));
     fs::write(&unknown, SOURCE).unwrap();
     let validate = run(&["validate", unknown.to_str().unwrap()]);
     assert_eq!(validate.status.code(), Some(2));
@@ -309,6 +310,31 @@ fn inspect_modes_sections_shape_and_edit_input_contract() {
         assert_eq!(value["mode"], mode);
         assert!(!value[mode].is_null());
     }
+
+    let validated = run(&["validate", extensionless.to_str().unwrap(), "--json"]);
+    assert!(validated.status.success(), "{validated:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&validated.stdout).unwrap()["valid"],
+        true
+    );
+    let prepared = run(&[
+        "prepare-render",
+        extensionless.to_str().unwrap(),
+        "--format",
+        "html",
+        "--stdout",
+    ]);
+    assert!(prepared.status.success(), "{prepared:?}");
+    assert!(String::from_utf8_lossy(&prepared.stdout).contains("\"images\""));
+    let rendered = run(&[
+        "render",
+        extensionless.to_str().unwrap(),
+        "--format",
+        "html",
+        "--stdout",
+    ]);
+    assert!(rendered.status.success(), "{rendered:?}");
+    assert!(rendered.stdout.starts_with(b"<!doctype html>"));
 
     let malformed = root.join("bad.json");
     fs::write(&malformed, "{").unwrap();
@@ -562,6 +588,47 @@ fn render_resolves_local_images_relative_to_input_and_bounds_assets() {
         String::from_utf8_lossy(&rendered.stderr)
     );
     assert!(String::from_utf8_lossy(&fs::read(&output).unwrap()).contains("data:image/png;base64,"));
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn render_skips_external_assets_case_insensitively_and_by_uri_scheme() {
+    let root = std::env::temp_dir().join(format!(
+        "ttyinv-v2-external-assets-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("invoice.md");
+    let output = root.join("invoice.html");
+
+    for source_path in [
+        "HTTP://does-not-exist.invalid/logo.png",
+        "custom://does-not-exist/logo.png",
+    ] {
+        let source = SOURCE.replace(
+            "## From\n\n- Name: Northstar Studio",
+            &format!("## From\n\n![Logo]({source_path})\n\n- Name: Northstar Studio"),
+        );
+        fs::write(&input, source).unwrap();
+        let rendered = run(&[
+            "render",
+            input.to_str().unwrap(),
+            "--format",
+            "html",
+            "--output",
+            output.to_str().unwrap(),
+        ]);
+        assert!(
+            rendered.status.success(),
+            "{}",
+            String::from_utf8_lossy(&rendered.stderr)
+        );
+        let _ = fs::remove_file(&output);
+    }
     let _ = fs::remove_dir_all(root);
 }
 

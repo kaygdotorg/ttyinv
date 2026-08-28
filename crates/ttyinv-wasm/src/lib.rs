@@ -1,13 +1,13 @@
 use serde::Serialize;
 use ttyinv_core::{
     execute as execute_core, invalid_command_message, CommandError, CommandErrorCode,
-    CommandOutcome, Diagnostic, InvoiceCommand, RetryClass, SOURCE_SIZE_LIMIT_MESSAGE,
+    CommandOutcome, Diagnostic, InvoiceCommand, RetryClass, MAX_ASSET_BYTES, MAX_ASSET_TOTAL_BYTES,
+    MAX_RENDERED_BYTES, SOURCE_SIZE_LIMIT_MESSAGE,
 };
 use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::{JsCast, JsValue};
 
 const MAX_DECODED_REQUEST_BYTES: usize = 256 * 1024;
-const MAX_WASM_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_SOURCE_BYTES: usize = ttyinv_core::MAX_SOURCE_BYTES;
 const MAX_KEY_UTF16: u32 = 64;
 const MAX_OBJECT_KEYS: u32 = 256;
@@ -162,6 +162,124 @@ fn string(
     budget.charge(value.len())?;
     Ok(JsValue::from_str(&value))
 }
+fn base64_digit(value: u8) -> Option<u8> {
+    match value {
+        b'A'..=b'Z' => Some(value - b'A'),
+        b'a'..=b'z' => Some(value - b'a' + 26),
+        b'0'..=b'9' => Some(value - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decoded_base64_length(value: &str) -> Option<usize> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || bytes.len() % 4 != 0 {
+        return None;
+    }
+    let padding = bytes.iter().rev().take_while(|&&byte| byte == b'=').count();
+    if padding > 2
+        || bytes[..bytes.len() - padding]
+            .iter()
+            .any(|&byte| base64_digit(byte).is_none())
+    {
+        return None;
+    }
+    if padding > 0
+        && (bytes.len() <= padding
+            || bytes[bytes.len() - padding - 1] == b'='
+            || (padding == 1
+                && base64_digit(bytes[bytes.len() - 2]).is_some_and(|digit| digit & 0x03 != 0))
+            || (padding == 2
+                && base64_digit(bytes[bytes.len() - 3]).is_some_and(|digit| digit & 0x0f != 0)))
+    {
+        return None;
+    }
+    Some(bytes.len() / 4 * 3 - padding)
+}
+
+fn max_base64_length(decoded_bytes: usize) -> usize {
+    decoded_bytes.saturating_add(2) / 3 * 4
+}
+
+fn asset_length(value: &JsValue, total: usize) -> Result<Option<usize>, JsValue> {
+    if let Some(bytes) = value.dyn_ref::<js_sys::Uint8Array>() {
+        return Ok(Some(bytes.length() as usize));
+    }
+    if let Some(array) = value.dyn_ref::<js_sys::Array>() {
+        return Ok(Some(array.length() as usize));
+    }
+    let Some(js_string) = value.dyn_ref::<js_sys::JsString>() else {
+        return Ok(None);
+    };
+    let length = js_string.length() as usize;
+    if length > max_base64_length(MAX_ASSET_BYTES) {
+        return Err(preflight_error(
+            CommandErrorCode::InvalidAsset,
+            "asset exceeds 1 MiB",
+        ));
+    }
+    let remaining = MAX_ASSET_TOTAL_BYTES.saturating_sub(total);
+    if length > max_base64_length(remaining) {
+        return Err(preflight_error(
+            CommandErrorCode::InvalidAsset,
+            "aggregate asset byte budget exceeded",
+        ));
+    }
+    Ok(value
+        .as_string()
+        .and_then(|value| decoded_base64_length(&value)))
+}
+
+fn validate_asset_limits(value: &JsValue, total: &mut usize) -> Result<(), JsValue> {
+    let Some(length) = asset_length(value, *total)? else {
+        return Ok(());
+    };
+    if length > MAX_ASSET_BYTES {
+        return Err(preflight_error(
+            CommandErrorCode::InvalidAsset,
+            "asset exceeds 1 MiB",
+        ));
+    }
+    *total = total.checked_add(length).ok_or_else(|| {
+        preflight_error(CommandErrorCode::InvalidAsset, "asset byte budget overflow")
+    })?;
+    if *total > MAX_ASSET_TOTAL_BYTES {
+        return Err(preflight_error(
+            CommandErrorCode::InvalidAsset,
+            "aggregate asset byte budget exceeded",
+        ));
+    }
+    Ok(())
+}
+
+fn snapshot_asset_bytes(value: &JsValue, budget: &mut SnapshotBudget) -> Result<JsValue, JsValue> {
+    budget.charge(16)?;
+    if let Some(bytes) = value.dyn_ref::<js_sys::Uint8Array>() {
+        let length = bytes.length() as usize;
+        let copy = js_sys::Uint8Array::new_with_length(length as u32);
+        copy.set(bytes, 0);
+        return Ok(copy.into());
+    }
+    if let Some(array) = value.dyn_ref::<js_sys::Array>() {
+        let copy = js_sys::Array::new_with_length(array.length());
+        for index in 0..array.length() {
+            copy.set(index, array.get(index));
+        }
+        return Ok(copy.into());
+    }
+    if let Some(value_string) = value.as_string() {
+        if decoded_base64_length(&value_string).is_some() {
+            return Ok(JsValue::from_str(&value_string));
+        }
+        return string(value, "asset.bytes", budget, MAX_SOURCE_BYTES);
+    }
+    Err(preflight_error(
+        CommandErrorCode::InvalidAsset,
+        "asset.bytes must be a Uint8Array, base64 string, or byte sequence",
+    ))
+}
 
 fn scalar_or_tree(
     value: &JsValue,
@@ -190,14 +308,15 @@ fn scalar_or_tree(
         return Ok(value.clone());
     }
     if let Some(bytes) = value.dyn_ref::<js_sys::Uint8Array>() {
-        let length = bytes.length();
-        if length as usize > MAX_DECODED_REQUEST_BYTES {
+        let length = bytes.length() as usize;
+        if length > MAX_DECODED_REQUEST_BYTES {
             return Err(preflight_error(
                 CommandErrorCode::Limit,
                 format!("{label} exceeds adapter size limit"),
             ));
         }
-        let copy = js_sys::Uint8Array::new_with_length(length);
+        budget.charge(length)?;
+        let copy = js_sys::Uint8Array::new_with_length(length as u32);
         copy.set(bytes, 0);
         return Ok(copy.into());
     }
@@ -283,12 +402,12 @@ fn snapshot_options(
             "accent",
             "font_scale",
             "frame_inset",
-            "png_scale",
             "assets",
         ],
         budget,
     )?;
     let mut entries = Vec::with_capacity(fields.len());
+    let mut asset_total = 0usize;
     for (key, value) in fields {
         if key == "assets" {
             let array = value
@@ -300,6 +419,7 @@ fn snapshot_options(
                     "too many render assets",
                 ));
             }
+            budget.charge(16)?;
             let copied = js_sys::Array::new_with_length(array.length());
             for index in 0..array.length() {
                 let asset = array.get(index);
@@ -326,7 +446,8 @@ fn snapshot_options(
                                     "asset.bytes must be a Uint8Array, base64 string, or byte sequence",
                                 ));
                             }
-                            scalar_or_tree(&asset_value, "asset.bytes", budget, 0)?
+                            validate_asset_limits(&asset_value, &mut asset_total)?;
+                            snapshot_asset_bytes(&asset_value, budget)?
                         }
                         _ => unreachable!(),
                     };
@@ -471,10 +592,10 @@ fn snapshot_command(value: &JsValue) -> Result<JsValue, JsValue> {
 
 fn serialize_outcome(outcome: CommandOutcome) -> Result<JsValue, JsValue> {
     if let CommandOutcome::Rendered { bytes, .. } = &outcome {
-        if bytes.len() > MAX_WASM_OUTPUT_BYTES {
+        if bytes.len() > MAX_RENDERED_BYTES {
             return Err(preflight_error(
                 CommandErrorCode::Limit,
-                format!("rendered output exceeds adapter limit ({MAX_WASM_OUTPUT_BYTES} bytes)"),
+                format!("rendered output exceeds core limit ({MAX_RENDERED_BYTES} bytes)"),
             ));
         }
     }
@@ -505,7 +626,58 @@ pub fn execute(command: JsValue) -> Result<JsValue, JsValue> {
 #[cfg(all(test, target_arch = "wasm32"))]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
+    fn code(error: JsValue) -> String {
+        js_sys::Reflect::get(&error, &JsValue::from_str("code"))
+            .unwrap()
+            .as_string()
+            .unwrap()
+    }
+
+    fn set(object: &js_sys::Object, key: &str, value: &JsValue) {
+        js_sys::Reflect::set(object, &JsValue::from_str(key), value).unwrap();
+    }
+
+    fn source_value() -> JsValue {
+        let source = js_sys::Object::new();
+        set(
+            &source,
+            "markdown",
+            &JsValue::from_str(include_str!("../../../examples/simple.md")),
+        );
+        source.into()
+    }
+
+    fn options_value() -> JsValue {
+        let options = js_sys::Object::new();
+        set(&options, "format", &JsValue::from_str("html"));
+        options.into()
+    }
+
+    fn command(kind: &str) -> js_sys::Object {
+        let command = js_sys::Object::new();
+        set(&command, "kind", &JsValue::from_str(kind));
+        command
+    }
+
+    fn assert_success(value: JsValue, key: &str) {
+        assert!(js_sys::Reflect::has(&value, &JsValue::from_str(key)).unwrap());
+        assert_eq!(
+            js_sys::Object::keys(value.unchecked_ref::<js_sys::Object>()).length(),
+            1
+        );
+    }
+
+    fn assert_error_shape(error: JsValue, expected_code: &str) {
+        assert_eq!(code(error.clone()), expected_code);
+        let diagnostics = js_sys::Reflect::get(&error, &JsValue::from_str("diagnostics")).unwrap();
+        assert!(diagnostics.dyn_ref::<js_sys::Array>().unwrap().length() > 0);
+        let retry = js_sys::Reflect::get(&error, &JsValue::from_str("retry"))
+            .unwrap()
+            .as_string();
+        assert!(retry.is_some());
+    }
     fn diagnostic_message(error: &JsValue) -> String {
         let diagnostics = js_sys::Reflect::get(error, &JsValue::from_str("diagnostics")).unwrap();
         let first = js_sys::Reflect::get(&diagnostics, &JsValue::from_f64(0.0)).unwrap();
@@ -514,7 +686,214 @@ mod tests {
             .as_string()
             .unwrap()
     }
-    #[test]
+
+    #[wasm_bindgen_test]
+    fn every_command_has_one_success_outcome_shape() {
+        let source = source_value();
+        let validate_command = command("validate");
+        set(&validate_command, "source", &source);
+        let validated = execute(validate_command.into()).expect("validate command");
+        assert_success(validated.clone(), "validated");
+        let validated_payload =
+            js_sys::Reflect::get(&validated, &JsValue::from_str("validated")).unwrap();
+        let revision =
+            js_sys::Reflect::get(&validated_payload, &JsValue::from_str("revision")).unwrap();
+
+        let inspect_command = command("inspect");
+        set(&inspect_command, "source", &source);
+        set(&inspect_command, "mode", &JsValue::from_str("summary"));
+        assert_success(
+            execute(inspect_command.into()).expect("inspect command"),
+            "inspected",
+        );
+
+        let convert_command = command("convert");
+        set(&convert_command, "source", &source);
+        set(&convert_command, "to", &JsValue::from_str("json"));
+        assert_success(
+            execute(convert_command.into()).expect("convert command"),
+            "converted",
+        );
+
+        let edit_command = command("edit");
+        let operation = js_sys::Object::new();
+        set(&operation, "kind", &JsValue::from_str("set_scalar"));
+        set(&operation, "path", &JsValue::from_str("metadata.terms"));
+        set(&operation, "value", &JsValue::from_str("Net 30"));
+        set(&edit_command, "source", &source);
+        set(&edit_command, "base_revision", &revision);
+        set(&edit_command, "operation", &operation.into());
+        assert_success(
+            execute(edit_command.into()).expect("edit command"),
+            "edited",
+        );
+
+        let prepare_command = command("prepare_render");
+        set(&prepare_command, "source", &source);
+        set(&prepare_command, "options", &options_value());
+        assert_success(
+            execute(prepare_command.into()).expect("prepare render command"),
+            "prepared",
+        );
+
+        let render_command = command("render");
+        set(&render_command, "source", &source);
+        set(&render_command, "options", &options_value());
+        assert_success(
+            execute(render_command.into()).expect("render command"),
+            "rendered",
+        );
+
+        let presentation_command = command("resolve_presentation");
+        set(
+            &presentation_command,
+            "config",
+            &js_sys::Object::new().into(),
+        );
+        assert_success(
+            execute(presentation_command.into()).expect("presentation command"),
+            "resolved_presentation",
+        );
+
+        let create_command = command("create");
+        let draft = js_sys::JSON::parse(
+            r#"{"title":"Created invoice","metadata":{"number":"INV-2026-001","issued":"2026-01-01","currency":"EUR"},"from":{"name":"Northstar Studio"},"bill_to":{"name":"Acme Research Ltd"}}"#,
+        )
+        .unwrap();
+        set(&create_command, "draft", &draft);
+        assert_success(
+            execute(create_command.into()).expect("create command"),
+            "created",
+        );
+
+        let registry_command = command("registry");
+        assert_success(
+            execute(registry_command.into()).expect("registry command"),
+            "registry",
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn command_errors_use_the_typed_error_shape() {
+        let unknown = command("not_a_command");
+        assert_error_shape(execute(unknown.into()).unwrap_err(), "invalid_request");
+
+        let malformed_source = command("validate");
+        let source = js_sys::Object::new();
+        set(&source, "markdown", &JsValue::from_str("# title"));
+        set(&source, "json", &JsValue::from_str("{}"));
+        set(&malformed_source, "source", &source.into());
+        assert_error_shape(
+            execute(malformed_source.into()).unwrap_err(),
+            "invalid_request",
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn valid_assets_are_not_limited_by_request_budget() {
+        let options = js_sys::Object::new();
+        set(&options, "format", &JsValue::from_str("html"));
+        let asset = js_sys::Object::new();
+        set(&asset, "source", &JsValue::from_str("large.bin"));
+        let bytes = js_sys::Uint8Array::new_with_length((MAX_DECODED_REQUEST_BYTES + 1) as u32);
+        set(&asset, "bytes", &bytes.into());
+        let assets = js_sys::Array::new();
+        assets.push(&asset);
+        set(&options, "assets", &assets.into());
+        let snapshot = snapshot_options(
+            &options.into(),
+            "render options",
+            &mut SnapshotBudget::default(),
+        )
+        .expect("asset bytes use the core asset budget");
+        let copied_assets = js_sys::Reflect::get(&snapshot, &JsValue::from_str("assets")).unwrap();
+        let copied_asset = js_sys::Reflect::get(&copied_assets, &JsValue::from_f64(0.0)).unwrap();
+        let copied_bytes =
+            js_sys::Reflect::get(&copied_asset, &JsValue::from_str("bytes")).unwrap();
+        assert_eq!(
+            copied_bytes
+                .dyn_into::<js_sys::Uint8Array>()
+                .unwrap()
+                .length(),
+            (MAX_DECODED_REQUEST_BYTES + 1) as u32
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn oversized_asset_strings_are_rejected_before_conversion() {
+        let options = js_sys::Object::new();
+        set(&options, "format", &JsValue::from_str("html"));
+        let asset = js_sys::Object::new();
+        set(&asset, "source", &JsValue::from_str("oversized.bin"));
+        let value = "A".repeat(max_base64_length(MAX_ASSET_BYTES) + 1);
+        set(&asset, "bytes", &JsValue::from_str(&value));
+        let assets = js_sys::Array::new();
+        assets.push(&asset);
+        set(&options, "assets", &assets.into());
+        let error = snapshot_options(
+            &options.into(),
+            "render options",
+            &mut SnapshotBudget::default(),
+        )
+        .unwrap_err();
+        assert_error_shape(error, "invalid_asset");
+    }
+
+    #[wasm_bindgen_test]
+    fn asset_size_errors_are_stable_across_wire_forms() {
+        let base64 = "A".repeat((MAX_ASSET_BYTES / 3 + 1) * 4);
+        let values = [
+            js_sys::Uint8Array::new_with_length((MAX_ASSET_BYTES + 1) as u32).into(),
+            js_sys::Array::new_with_length((MAX_ASSET_BYTES + 1) as u32).into(),
+            JsValue::from_str(&base64),
+        ];
+        for value in values {
+            let options = js_sys::Object::new();
+            set(&options, "format", &JsValue::from_str("html"));
+            let asset = js_sys::Object::new();
+            set(&asset, "source", &JsValue::from_str("asset.bin"));
+            set(&asset, "bytes", &value);
+            let assets = js_sys::Array::new();
+            assets.push(&asset);
+            set(&options, "assets", &assets.into());
+            let error = snapshot_options(
+                &options.into(),
+                "render options",
+                &mut SnapshotBudget::default(),
+            )
+            .unwrap_err();
+            assert_error_shape(error.clone(), "invalid_asset");
+            assert_eq!(diagnostic_message(&error), "asset exceeds 1 MiB");
+        }
+
+        let bytes = js_sys::Uint8Array::new_with_length(MAX_ASSET_BYTES as u32);
+        let mut total = 0;
+        for _ in 0..(MAX_ASSET_TOTAL_BYTES / MAX_ASSET_BYTES) {
+            validate_asset_limits(&bytes.clone().into(), &mut total).unwrap();
+        }
+        assert_eq!(total, MAX_ASSET_TOTAL_BYTES);
+        let error = validate_asset_limits(&bytes.into(), &mut total).unwrap_err();
+        assert_error_shape(error.clone(), "invalid_asset");
+        assert_eq!(
+            diagnostic_message(&error),
+            "aggregate asset byte budget exceeded"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn uint8array_snapshot_charges_before_copying() {
+        let bytes = js_sys::Uint8Array::new_with_length(MAX_DECODED_REQUEST_BYTES as u32);
+        let mut budget = SnapshotBudget::default();
+        let copied = scalar_or_tree(&bytes.clone().into(), "bytes", &mut budget, 0)
+            .expect("bytes at the request limit");
+        assert_eq!(
+            copied.dyn_into::<js_sys::Uint8Array>().unwrap().length(),
+            MAX_DECODED_REQUEST_BYTES as u32
+        );
+        let error = scalar_or_tree(&bytes.into(), "bytes", &mut budget, 0).unwrap_err();
+        assert_error_shape(error, "limit");
+    }
+    #[wasm_bindgen_test]
     fn registry_crosses_the_single_executor() {
         let command = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -526,7 +905,7 @@ mod tests {
         let result = execute(command.into()).expect("registry command");
         assert!(js_sys::Reflect::has(&result, &JsValue::from_str("registry")).unwrap());
     }
-    #[test]
+    #[wasm_bindgen_test]
     fn registry_and_presentation_are_json_compatible() {
         let registry_command = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -594,7 +973,7 @@ mod tests {
         assert!(js_sys::Object::keys(geometry.unchecked_ref::<js_sys::Object>()).length() > 0);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn unknown_command_fields_fail_before_deserialization() {
         let command = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -614,7 +993,7 @@ mod tests {
         assert_eq!(diagnostic_message(&error), "unknown command field: evil");
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn invalid_option_uses_shared_invalid_command_message_prefix() {
         let command = js_sys::Object::new();
         let options = js_sys::Object::new();
@@ -644,12 +1023,13 @@ mod tests {
         assert_eq!(
             diagnostic_message(&error),
             format!(
-                "{INVALID_COMMAND_MESSAGE_PREFIX}unknown variant `gif`, expected one of `html`, `pdf`, `png`"
+                "{}unknown variant `gif`, expected one of `html`, `pdf`, `png`",
+                ttyinv_core::INVALID_COMMAND_MESSAGE_PREFIX
             )
         );
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn source_requires_one_exact_format() {
         let source = js_sys::Object::new();
         js_sys::Reflect::set(
@@ -678,7 +1058,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn assets_accept_wire_forms_but_reject_nonsense() {
         let options = js_sys::Object::new();
         let assets = js_sys::Array::new();
@@ -704,7 +1084,7 @@ mod tests {
             "invalid_asset"
         );
     }
-    #[test]
+    #[wasm_bindgen_test]
     fn render_accepts_uint8array_assets() {
         let source = r#"---
 schema: ttyinv/v2
@@ -800,7 +1180,7 @@ density: comfortable
         assert!(output.length() > signature_png.len() as u32);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn oversized_source_matches_core_limit_diagnostic() {
         let command = js_sys::Object::new();
         let source = js_sys::Object::new();

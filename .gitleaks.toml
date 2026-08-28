@@ -4,11 +4,9 @@ title = "ttyinv secret-scanning policy"
 useDefault = true
 
 [allowlist]
-description = "Only known fabricated documentation values are allowed."
-paths = [
-  '''^LICENSE$''',
-  '''(^|/)(?:dist|build|target)(/|$)''',
-]
+description = "Only reviewed fixture values are allowed."
+# Keep paths empty so tracked generated files remain scanned.
+paths = []
 regexes = [
   '''FR0{11}''',
   '''DE0{9}''',

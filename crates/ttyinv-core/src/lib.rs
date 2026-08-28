@@ -15,12 +15,13 @@ pub use amount_words::{
 };
 pub use command::*;
 pub use render::{
-    PreparedAmountInWords, PreparedBlock, PreparedImage, PreparedItem, PreparedLink, PreparedNode,
-    PreparedPage, PreparedParty, PreparedPrimitive, PreparedRender, PreparedSemantic, PreparedSpan,
-    PreparedTableRow, PreparedTextRow, Presentation, PresentationAccent, PresentationContent,
-    PresentationFont, PresentationScale, PresentationTokens, RenderFormat, RenderWarning,
-    ThemeTokens, MAX_ASSET_BYTES, MAX_ASSET_TOTAL_BYTES, MAX_PAGES, MAX_PNG_PIXELS,
-    MAX_PNG_TOTAL_PIXELS, MAX_RENDERED_BYTES, PAGE_HEIGHT, PAGE_WIDTH, PREPARED_RENDER_VERSION,
+    is_external_asset_source, PreparedAmountInWords, PreparedBlock, PreparedImage, PreparedItem,
+    PreparedLink, PreparedNode, PreparedPage, PreparedParty, PreparedPrimitive, PreparedRender,
+    PreparedSemantic, PreparedSpan, PreparedTableRow, PreparedTextRow, Presentation,
+    PresentationAccent, PresentationContent, PresentationFont, PresentationScale,
+    PresentationTokens, RenderFormat, RenderWarning, ThemeTokens, MAX_ASSET_BYTES,
+    MAX_ASSET_TOTAL_BYTES, MAX_PAGES, MAX_PNG_PIXELS, MAX_PNG_TOTAL_PIXELS, MAX_RENDERED_BYTES,
+    PAGE_HEIGHT, PAGE_WIDTH, PREPARED_RENDER_VERSION,
 };
 pub const MAX_SOURCE_BYTES: usize = 128 * 1024;
 pub const MAX_EDIT_BYTES: usize = 128 * 1024;
@@ -334,8 +335,8 @@ pub(crate) fn document(source: &str) -> Result<Document, ValidationReport> {
         return Err(ValidationReport { diagnostics: e });
     }
     let raw: serde_yaml::Value = match serde_yaml::from_str(yaml) {
-        Ok(v) if !yaml_contains_null(&v) => v,
-        _ => {
+        Ok(v) => v,
+        Err(_) => {
             return Err(ValidationReport {
                 diagnostics: vec![Diagnostic::error(
                     "SCHEMA001",
@@ -823,11 +824,21 @@ fn valid_separator_cell(value: &str) -> bool {
     let value = value.strip_suffix(':').unwrap_or(value);
     value.len() >= 3 && value.chars().all(|c| c == '-')
 }
-
 fn parse_table(b: &[&str], e: &mut Vec<Diagnostic>) -> Option<Table> {
     let mut ls = Vec::new();
     let mut prose = false;
+    let mut fence = None;
     for x in b {
+        if let Some(current) = fence {
+            if fence_close(x, current) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(start) = fence_start(x) {
+            fence = Some(start);
+            continue;
+        }
         if x.trim().is_empty() {
             continue;
         }
@@ -1539,33 +1550,8 @@ fn validate_model(d: &Document) -> Result<(), String> {
     }
     Ok(())
 }
-fn json_contains_null(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Null => true,
-        serde_json::Value::Array(values) => values.iter().any(json_contains_null),
-        serde_json::Value::Object(values) => values.values().any(json_contains_null),
-        _ => false,
-    }
-}
-
-fn yaml_contains_null(value: &serde_yaml::Value) -> bool {
-    match value {
-        serde_yaml::Value::Null => true,
-        serde_yaml::Value::Sequence(values) => values.iter().any(yaml_contains_null),
-        serde_yaml::Value::Mapping(values) => values.values().any(yaml_contains_null),
-        _ => false,
-    }
-}
-
 pub(crate) fn parse_json(x: &str) -> Result<Document, serde_json::Error> {
-    let raw: serde_json::Value = serde_json::from_str(x)?;
-    if json_contains_null(&raw) {
-        return Err(serde_json::Error::io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "null values are not valid in a ttyinv/v2 document",
-        )));
-    }
-    let d: Document = serde_json::from_value(raw)?;
+    let d: Document = serde_json::from_str(x)?;
     validate_model(&d).map_err(|m| {
         serde_json::Error::io(std::io::Error::new(std::io::ErrorKind::InvalidData, m))
     })?;
@@ -1578,13 +1564,7 @@ pub(crate) fn to_json(d: &Document) -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(d)
 }
 pub(crate) fn parse_yaml(x: &str) -> Result<Document, serde_yaml::Error> {
-    let raw: serde_yaml::Value = serde_yaml::from_str(x)?;
-    if yaml_contains_null(&raw) {
-        return Err(serde_yaml::Error::custom(
-            "null values are not valid in a ttyinv/v2 document",
-        ));
-    }
-    let d: Document = serde_yaml::from_value(raw)?;
+    let d: Document = serde_yaml::from_str(x)?;
     validate_model(&d).map_err(serde_yaml::Error::custom)?;
     Ok(d)
 }
